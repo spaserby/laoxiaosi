@@ -25,6 +25,12 @@
 CREATE EXTENSION IF NOT EXISTS vector;
 CREATE EXTENSION IF NOT EXISTS pg_trgm;
 
+-- ★ 历史库升级补列：CREATE TABLE IF NOT EXISTS 对已存在的表是空操作，
+--   老库不会自动长出后加的列（doc_type / owner_key），必须显式 ALTER 兜底，
+--   否则升级后应用一写入就报 column does not exist。
+ALTER TABLE law_article  ADD COLUMN IF NOT EXISTS doc_type  VARCHAR(32);
+ALTER TABLE chat_session ADD COLUMN IF NOT EXISTS owner_key VARCHAR(80);
+
 -- 法条底账（唯一事实源，从 MySQL 迁来；列名与旧表一致保证迁移零映射）
 CREATE TABLE IF NOT EXISTS law_article (
   id           BIGINT PRIMARY KEY,
@@ -60,13 +66,19 @@ CREATE TABLE IF NOT EXISTS app_user (
 );
 
 -- 会话索引（取代 Redis Hash chat:session:index；与消息同库，悬空问题根除）
+-- 会话索引（取代 Redis Hash chat:session:index；与消息同库，悬空问题根除）
+-- owner_key：会话归属，列表/读取/删除/停止生成按它鉴权（P0 安全整改）
+--   登录 u:{userId} / 匿名 g:{guestKey}（前端 localStore 随机串，X-Guest-Key 头）
+--   / legacy = 整改前的历史数据，任何调用方都读不到
 CREATE TABLE IF NOT EXISTS chat_session (
   session_id VARCHAR(64) PRIMARY KEY,
   title      VARCHAR(64) NOT NULL,
   created_at BIGINT NOT NULL,
-  updated_at BIGINT NOT NULL
+  updated_at BIGINT NOT NULL,
+  owner_key  VARCHAR(80)
 );
 CREATE INDEX IF NOT EXISTS idx_session_updated ON chat_session(updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_session_owner ON chat_session(owner_key, updated_at DESC);
 
 -- 会话消息（取代 Redis RList chat:memory:{sid}；id 自增即时序）
 CREATE TABLE IF NOT EXISTS chat_message (
