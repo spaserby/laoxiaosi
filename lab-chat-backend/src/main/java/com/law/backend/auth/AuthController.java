@@ -154,8 +154,8 @@ public class AuthController {
     }
 
     private QuotaService.QuotaCtx guestCtx(ServerWebExchange exchange) {
-        String ip = exchange.getRequest().getRemoteAddress() == null
-                ? "unknown" : exchange.getRequest().getRemoteAddress().getAddress().getHostAddress();
+        // ClientIp 兼容 forward-headers 解析出的未解析地址（getAddress() 可能为 null）
+        String ip = com.law.backend.util.ClientIp.of(exchange);
         return new QuotaService.QuotaCtx("guest", "ip:" + ip);
     }
 

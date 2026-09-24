@@ -1,0 +1,151 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="650" viewBox="0 0 1280 650" font-family="'Microsoft YaHei','PingFang SC','Noto Sans SC',sans-serif">
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#94A3B8"/>
+    </marker>
+    <linearGradient id="titleBar" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#1E3A8A"/>
+      <stop offset="100%" stop-color="#3B5BDB"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1280" height="650" fill="#F8FAFC"/>
+
+  <!-- 标题 -->
+  <rect x="40" y="18" width="1200" height="56" rx="10" fill="url(#titleBar)"/>
+  <text x="640" y="44" text-anchor="middle" font-size="21" font-weight="bold" fill="#FFFFFF">七阶段学习路线图：从"能流式聊天"到"可部署运营"</text>
+  <text x="640" y="65" text-anchor="middle" font-size="12.5" fill="#DBEAFE">每个阶段解决一类独立的工程问题 · 全程单模块增量演进 · 每一步都可运行可回溯</text>
+
+  <!-- ═══ 第一行：阶段一 ~ 四 ═══ -->
+
+  <!-- 阶段一 -->
+  <rect x="50" y="100" width="280" height="210" rx="10" fill="#FFFFFF" stroke="#C7D2FE" stroke-width="1.5"/>
+  <rect x="50" y="100" width="280" height="40" rx="10" fill="#4338CA"/>
+  <rect x="50" y="126" width="280" height="14" fill="#4338CA"/>
+  <text x="190" y="126" text-anchor="middle" font-size="14" font-weight="bold" fill="#FFFFFF">阶段一 · 流式对话内核</text>
+  <rect x="66" y="150" width="150" height="20" rx="10" fill="#EEF2FF"/>
+  <text x="141" y="164" text-anchor="middle" font-size="10.5" fill="#4338CA">Day1-2 · 16 · 26</text>
+  <text x="66" y="192" font-size="11" font-style="italic" fill="#64748B">把"能聊天"做扎实</text>
+  <g font-size="11" fill="#334155">
+    <text x="66" y="214">• SSE 流式输出 + 真停止生成</text>
+    <text x="66" y="233">• 会话记忆持久化（ChatMemory）</text>
+    <text x="66" y="252">• 原文窗口 + 早期摘要两级压缩</text>
+    <text x="66" y="271">• 思考过程可见化（reasoning）</text>
+    <text x="66" y="290">• 流式与滚动体验治理</text>
+  </g>
+
+  <line x1="330" y1="205" x2="345" y2="205" stroke="#94A3B8" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <!-- 阶段二 -->
+  <rect x="345" y="100" width="280" height="210" rx="10" fill="#FFFFFF" stroke="#A5F3FC" stroke-width="1.5"/>
+  <rect x="345" y="100" width="280" height="40" rx="10" fill="#0E7490"/>
+  <rect x="345" y="126" width="280" height="14" fill="#0E7490"/>
+  <text x="485" y="126" text-anchor="middle" font-size="14" font-weight="bold" fill="#FFFFFF">阶段二 · 工具调用</text>
+  <rect x="361" y="150" width="110" height="20" rx="10" fill="#ECFEFF"/>
+  <text x="416" y="164" text-anchor="middle" font-size="10.5" fill="#0E7490">Day3 · 8</text>
+  <text x="361" y="192" font-size="11" font-style="italic" fill="#64748B">让模型会做事</text>
+  <g font-size="11" fill="#334155">
+    <text x="361" y="214">• Function Calling（@Tool 注解）</text>
+    <text x="361" y="233">• 法律计算器：补偿金/加班费/时效</text>
+    <text x="361" y="252">• 联网搜索（直调联网子模型）</text>
+    <text x="361" y="271">• 工具预算治理（ToolBudget）</text>
+    <text x="361" y="290">• 路线差异化挂载工具集</text>
+  </g>
+
+  <line x1="625" y1="205" x2="640" y2="205" stroke="#94A3B8" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <!-- 阶段三 -->
+  <rect x="640" y="100" width="280" height="210" rx="10" fill="#FFFFFF" stroke="#A7F3D0" stroke-width="1.5"/>
+  <rect x="640" y="100" width="280" height="40" rx="10" fill="#047857"/>
+  <rect x="640" y="126" width="280" height="14" fill="#047857"/>
+  <text x="780" y="126" text-anchor="middle" font-size="14" font-weight="bold" fill="#FFFFFF">阶段三 · RAG 知识库</text>
+  <rect x="656" y="150" width="170" height="20" rx="10" fill="#ECFDF5"/>
+  <text x="741" y="164" text-anchor="middle" font-size="10.5" fill="#047857">Day4 · 6 · 7 · 13 · 17 · 28</text>
+  <text x="656" y="192" font-size="11" font-style="italic" fill="#64748B">让模型懂法律</text>
+  <g font-size="11" fill="#334155">
+    <text x="656" y="214">• 法条向量化 + Top-K 检索起步</text>
+    <text x="656" y="233">• 底账化：唯一事实源 + MD5 增量</text>
+    <text x="656" y="252">• Agentic RAG：检索工具化多跳</text>
+    <text x="656" y="271">• 混合检索 + 精排 + Small-to-Big</text>
+    <text x="656" y="290">• 引用可信度（结构化 citation）</text>
+  </g>
+
+  <line x1="920" y1="205" x2="935" y2="205" stroke="#94A3B8" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <!-- 阶段四 -->
+  <rect x="935" y="100" width="280" height="210" rx="10" fill="#FFFFFF" stroke="#FDE68A" stroke-width="1.5"/>
+  <rect x="935" y="100" width="280" height="40" rx="10" fill="#B45309"/>
+  <rect x="935" y="126" width="280" height="14" fill="#B45309"/>
+  <text x="1075" y="126" text-anchor="middle" font-size="14" font-weight="bold" fill="#FFFFFF">阶段四 · 多模型路由</text>
+  <rect x="951" y="150" width="80" height="20" rx="10" fill="#FFFBEB"/>
+  <text x="991" y="164" text-anchor="middle" font-size="10.5" fill="#B45309">Day5</text>
+  <text x="951" y="192" font-size="11" font-style="italic" fill="#64748B">成本与质量平衡</text>
+  <g font-size="11" fill="#334155">
+    <text x="951" y="214">• 五路模型端点（配置驱动）</text>
+    <text x="951" y="233">• 三级级联：关键词→语义→LLM</text>
+    <text x="951" y="252">• 路线差异化：温度/思考/工具</text>
+    <text x="951" y="271">• 加模型只改 yml，零代码</text>
+    <text x="951" y="290">• 闲聊路线零成本（不挂工具）</text>
+  </g>
+
+  <!-- 蛇形转折 -->
+  <polyline points="1075,310 1075,332 335,332 335,352" fill="none" stroke="#94A3B8" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <!-- ═══ 第二行：阶段五 ~ 七 ═══ -->
+
+  <!-- 阶段五 -->
+  <rect x="195" y="352" width="280" height="210" rx="10" fill="#FFFFFF" stroke="#FECDD3" stroke-width="1.5"/>
+  <rect x="195" y="352" width="280" height="40" rx="10" fill="#BE123C"/>
+  <rect x="195" y="378" width="280" height="14" fill="#BE123C"/>
+  <text x="335" y="378" text-anchor="middle" font-size="14" font-weight="bold" fill="#FFFFFF">阶段五 · 安全与质量门</text>
+  <rect x="211" y="402" width="180" height="20" rx="10" fill="#FFF1F2"/>
+  <text x="301" y="416" text-anchor="middle" font-size="10.5" fill="#BE123C">Day9-12 · 14 · 15</text>
+  <text x="211" y="444" font-size="11" font-style="italic" fill="#64748B">守住底线</text>
+  <g font-size="11" fill="#334155">
+    <text x="211" y="466">• 确定性安全层（纯规则零 LLM）</text>
+    <text x="211" y="485">• Grounded ReAct 强制检索打底</text>
+    <text x="211" y="504">• 质量门审校 + SSE retry 重试</text>
+    <text x="211" y="523">• 评估门禁：金标集一票否决</text>
+    <text x="211" y="542">• 多轮指代消解（PlannerAgent）</text>
+  </g>
+
+  <line x1="475" y1="457" x2="490" y2="457" stroke="#94A3B8" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <!-- 阶段六 -->
+  <rect x="490" y="352" width="280" height="210" rx="10" fill="#FFFFFF" stroke="#DDD6FE" stroke-width="1.5"/>
+  <rect x="490" y="352" width="280" height="40" rx="10" fill="#7C3AED"/>
+  <rect x="490" y="378" width="280" height="14" fill="#7C3AED"/>
+  <text x="630" y="378" text-anchor="middle" font-size="14" font-weight="bold" fill="#FFFFFF">阶段六 · 产品化与用户体系</text>
+  <rect x="506" y="402" width="210" height="20" rx="10" fill="#F5F3FF"/>
+  <text x="611" y="416" text-anchor="middle" font-size="10.5" fill="#7C3AED">Day18-22 · 24 · 25 · 27</text>
+  <text x="506" y="444" font-size="11" font-style="italic" fill="#64748B">从 Demo 到产品</text>
+  <g font-size="11" fill="#334155">
+    <text x="506" y="466">• JWT + RBAC 五角色 + 短信验证码</text>
+    <text x="506" y="485">• Vue3 公报问答台（V9 视觉体系）</text>
+    <text x="506" y="504">• 分层配额 + 管理端（向量同步）</text>
+    <text x="506" y="523">• 劳动法专精 + 多模态附件解析</text>
+    <text x="506" y="542">• 移动端适配与体验精修</text>
+  </g>
+
+  <line x1="770" y1="457" x2="785" y2="457" stroke="#94A3B8" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <!-- 阶段七 -->
+  <rect x="785" y="352" width="280" height="210" rx="10" fill="#FFFFFF" stroke="#BFDBFE" stroke-width="1.5"/>
+  <rect x="785" y="352" width="280" height="40" rx="10" fill="#1E3A8A"/>
+  <rect x="785" y="378" width="280" height="14" fill="#1E3A8A"/>
+  <text x="925" y="378" text-anchor="middle" font-size="14" font-weight="bold" fill="#FFFFFF">阶段七 · 存储演进与部署</text>
+  <rect x="801" y="402" width="110" height="20" rx="10" fill="#EFF6FF"/>
+  <text x="856" y="416" text-anchor="middle" font-size="10.5" fill="#1E3A8A">Day23 · 29</text>
+  <text x="801" y="444" font-size="11" font-style="italic" fill="#64748B">工程化收尾</text>
+  <g font-size="11" fill="#334155">
+    <text x="801" y="466">• MySQL → PostgreSQL 存储迁移</text>
+    <text x="801" y="485">• pgvector + HNSW 向量同库</text>
+    <text x="801" y="504">• MyBatis 取代 JPA</text>
+    <text x="801" y="523">• Docker Compose + nginx 部署契约</text>
+    <text x="801" y="542">• 数据迁移双路线 + 运维手册</text>
+  </g>
+
+  <!-- 底部注释 -->
+  <text x="640" y="600" text-anchor="middle" font-size="12" fill="#475569">学习节奏建议：每个阶段先跑通 → 再读源码 → 再动手改造 → 最后让 AI 出题自测（八股 → 工程能力 → 项目叙事 三合一）</text>
+  <text x="640" y="626" text-anchor="middle" font-size="10.5" fill="#94A3B8">全程代码集中在 lab-chat-backend 单模块，以 dayN 注释标注增量点，任意一天 checkout 出来都能独立运行</text>
+</svg>

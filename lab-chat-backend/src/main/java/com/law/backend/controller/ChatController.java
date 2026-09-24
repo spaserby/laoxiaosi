@@ -131,8 +131,7 @@ public class ChatController {
                 log.warn("配额角色反查失败，按游客计: userId={}, error={}", userId, e.getMessage());
             }
         }
-        String ip = exchange.getRequest().getRemoteAddress() == null
-                ? "unknown" : exchange.getRequest().getRemoteAddress().getAddress().getHostAddress();
+        String ip = com.law.backend.util.ClientIp.of(exchange);
         return new QuotaService.QuotaCtx("guest", "ip:" + ip);
     }
 

@@ -1,0 +1,145 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="760" viewBox="0 0 1280 760" font-family="'Microsoft YaHei','PingFang SC','Noto Sans SC',sans-serif">
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#94A3B8"/>
+    </marker>
+    <linearGradient id="titleBar" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#1E3A8A"/>
+      <stop offset="100%" stop-color="#3B5BDB"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1280" height="760" fill="#F8FAFC"/>
+
+  <!-- 标题 -->
+  <rect x="40" y="18" width="1200" height="56" rx="10" fill="url(#titleBar)"/>
+  <text x="640" y="44" text-anchor="middle" font-size="21" font-weight="bold" fill="#FFFFFF">存储选型自由度：Spring AI 抽象层让存储可插拔</text>
+  <text x="640" y="65" text-anchor="middle" font-size="12.5" fill="#DBEAFE">PG + Redis 只是默认组合 —— MySQL 党可以无痛切换，大规模场景可以四件套并行</text>
+
+  <!-- 业务层 -->
+  <rect x="40" y="90" width="1200" height="84" rx="10" fill="#EFF6FF" stroke="#BFDBFE" stroke-width="1.5"/>
+  <text x="60" y="116" font-size="14.5" font-weight="bold" fill="#1D4ED8">业务层（存储无关 · 切换时零改动）</text>
+  <g font-size="11.5">
+    <rect x="60" y="128" width="218" height="32" rx="6" fill="#FFFFFF" stroke="#BFDBFE"/>
+    <text x="169" y="148" text-anchor="middle" fill="#1E293B">RAG 五阶段检索管线</text>
+    <rect x="290" y="128" width="218" height="32" rx="6" fill="#FFFFFF" stroke="#BFDBFE"/>
+    <text x="399" y="148" text-anchor="middle" fill="#1E293B">三级级联模型路由</text>
+    <rect x="520" y="128" width="218" height="32" rx="6" fill="#FFFFFF" stroke="#BFDBFE"/>
+    <text x="629" y="148" text-anchor="middle" fill="#1E293B">确定性安全层 + 质量门</text>
+    <rect x="750" y="128" width="218" height="32" rx="6" fill="#FFFFFF" stroke="#BFDBFE"/>
+    <text x="859" y="148" text-anchor="middle" fill="#1E293B">Function Calling 工具集</text>
+    <rect x="980" y="128" width="240" height="32" rx="6" fill="#FFFFFF" stroke="#BFDBFE"/>
+    <text x="1100" y="148" text-anchor="middle" fill="#1E293B">SSE 流式编排 + 会话记忆压缩</text>
+  </g>
+
+  <line x1="640" y1="174" x2="640" y2="194" stroke="#94A3B8" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <!-- 抽象层 -->
+  <rect x="40" y="196" width="1200" height="88" rx="10" fill="#FFF7ED" stroke="#FED7AA" stroke-width="1.5"/>
+  <text x="60" y="222" font-size="14.5" font-weight="bold" fill="#C2410C">Spring AI 抽象接口层（可插拔的关键）</text>
+  <g font-size="12">
+    <rect x="60" y="234" width="370" height="38" rx="6" fill="#FFFFFF" stroke="#FED7AA"/>
+    <text x="245" y="251" text-anchor="middle" font-weight="bold" fill="#1E293B">VectorStore 接口</text>
+    <text x="245" y="266" text-anchor="middle" font-size="10.5" fill="#64748B">add() / similaritySearch() —— 换向量库只换 starter</text>
+
+    <rect x="455" y="234" width="370" height="38" rx="6" fill="#FFFFFF" stroke="#FED7AA"/>
+    <text x="640" y="251" text-anchor="middle" font-weight="bold" fill="#1E293B">ChatMemory 接口</text>
+    <text x="640" y="266" text-anchor="middle" font-size="10.5" fill="#64748B">add() / get() / clear() —— 会话记忆存储自由实现</text>
+
+    <rect x="850" y="234" width="370" height="38" rx="6" fill="#FFFFFF" stroke="#FED7AA"/>
+    <text x="1035" y="251" text-anchor="middle" font-weight="bold" fill="#1E293B">JdbcTemplate / MyBatis Mapper</text>
+    <text x="1035" y="266" text-anchor="middle" font-size="10.5" fill="#64748B">law_article 底账 CRUD —— 标准 SQL，方言差异极小</text>
+  </g>
+
+  <!-- 分叉箭头 -->
+  <line x1="235" y1="284" x2="235" y2="300" stroke="#94A3B8" stroke-width="2" marker-end="url(#arrow)"/>
+  <line x1="640" y1="284" x2="640" y2="300" stroke="#94A3B8" stroke-width="2" marker-end="url(#arrow)"/>
+  <line x1="1045" y1="284" x2="1045" y2="300" stroke="#94A3B8" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <!-- ═══ 方案① 默认组合 ═══ -->
+  <rect x="50" y="302" width="370" height="290" rx="10" fill="#ECFDF5" stroke="#6EE7B7" stroke-width="2"/>
+  <rect x="50" y="302" width="370" height="42" rx="10" fill="#059669"/>
+  <rect x="50" y="330" width="370" height="14" fill="#059669"/>
+  <text x="235" y="329" text-anchor="middle" font-size="14.5" font-weight="bold" fill="#FFFFFF">方案① 默认组合（本项目现役）</text>
+  <text x="235" y="366" text-anchor="middle" font-size="11" fill="#047857">PostgreSQL + Redis · 一库三用，运维最简</text>
+
+  <g font-size="11.5">
+    <rect x="68" y="380" width="334" height="40" rx="6" fill="#FFFFFF" stroke="#A7F3D0"/>
+    <text x="82" y="397" font-weight="bold" fill="#1E293B">PostgreSQL 18</text>
+    <text x="82" y="413" font-size="10.5" fill="#64748B">law_article 底账 + chat_message 会话记忆（同库）</text>
+
+    <rect x="68" y="426" width="334" height="40" rx="6" fill="#FFFFFF" stroke="#A7F3D0"/>
+    <text x="82" y="443" font-weight="bold" fill="#1E293B">pgvector（HNSW / COSINE）</text>
+    <text x="82" y="459" font-size="10.5" fill="#64748B">vector_store 稠密向量检索，initialize-schema 自动建表</text>
+
+    <rect x="68" y="472" width="334" height="40" rx="6" fill="#FFFFFF" stroke="#A7F3D0"/>
+    <text x="82" y="489" font-weight="bold" fill="#1E293B">pg_trgm GIN</text>
+    <text x="82" y="505" font-size="10.5" fill="#64748B">稀疏检索路：条文编号精确匹配，与向量同库融合</text>
+
+    <rect x="68" y="518" width="334" height="40" rx="6" fill="#FFFFFF" stroke="#A7F3D0"/>
+    <text x="82" y="535" font-weight="bold" fill="#1E293B">Redis + Redisson</text>
+    <text x="82" y="551" font-size="10.5" fill="#64748B">配额计数 / 分布式锁 / 停止信号等纯易失态</text>
+  </g>
+  <text x="235" y="578" text-anchor="middle" font-size="10.5" fill="#047857">✦ 适合：学习演进、中小规模部署（2核2G 可跑）</text>
+
+  <!-- ═══ 方案② MySQL 友好组合 ═══ -->
+  <rect x="455" y="302" width="370" height="290" rx="10" fill="#EFF6FF" stroke="#93C5FD" stroke-width="2"/>
+  <rect x="455" y="302" width="370" height="42" rx="10" fill="#2563EB"/>
+  <rect x="455" y="330" width="370" height="14" fill="#2563EB"/>
+  <text x="640" y="329" text-anchor="middle" font-size="14.5" font-weight="bold" fill="#FFFFFF">方案② MySQL 友好组合</text>
+  <text x="640" y="366" text-anchor="middle" font-size="11" fill="#1D4ED8">MySQL + Redis Stack · Java 开发最熟悉的路子</text>
+
+  <g font-size="11.5">
+    <rect x="473" y="380" width="334" height="40" rx="6" fill="#FFFFFF" stroke="#BFDBFE"/>
+    <text x="487" y="397" font-weight="bold" fill="#1E293B">MySQL 8.x</text>
+    <text x="487" y="413" font-size="10.5" fill="#64748B">law_article 底账 + 会话记忆表（Mapper 改方言即可）</text>
+
+    <rect x="473" y="426" width="334" height="40" rx="6" fill="#FFFFFF" stroke="#BFDBFE"/>
+    <text x="487" y="443" font-weight="bold" fill="#1E293B">Redis Stack（RediSearch）</text>
+    <text x="487" y="459" font-size="10.5" fill="#64748B">向量索引：换 spring-ai-starter-vector-store-redis</text>
+
+    <rect x="473" y="472" width="334" height="40" rx="6" fill="#FFFFFF" stroke="#BFDBFE"/>
+    <text x="487" y="489" font-weight="bold" fill="#1E293B">MySQL FULLTEXT（ngram）</text>
+    <text x="487" y="505" font-size="10.5" fill="#64748B">稀疏检索路替代 pg_trgm，中文分词需配 ngram 解析器</text>
+
+    <rect x="473" y="518" width="334" height="40" rx="6" fill="#FFFFFF" stroke="#BFDBFE"/>
+    <text x="487" y="535" font-weight="bold" fill="#1E293B">Redis（同实例复用）</text>
+    <text x="487" y="551" font-size="10.5" fill="#64748B">缓存 / 锁 / 配额职责不变；向量库需 noeviction + AOF</text>
+  </g>
+  <text x="640" y="578" text-anchor="middle" font-size="10.5" fill="#1D4ED8">✦ 适合：团队 MySQL 技术储备深、不想引入 PG 的场景</text>
+
+  <!-- ═══ 方案③ 大规模组合 ═══ -->
+  <rect x="860" y="302" width="370" height="290" rx="10" fill="#F5F3FF" stroke="#C4B5FD" stroke-width="2"/>
+  <rect x="860" y="302" width="370" height="42" rx="10" fill="#7C3AED"/>
+  <rect x="860" y="330" width="370" height="14" fill="#7C3AED"/>
+  <text x="1045" y="329" text-anchor="middle" font-size="14.5" font-weight="bold" fill="#FFFFFF">方案③ 大规模四件套组合</text>
+  <text x="1045" y="366" text-anchor="middle" font-size="11" fill="#6D28D9">MySQL + MongoDB + Redis + Milvus · 各司其职</text>
+
+  <g font-size="11.5">
+    <rect x="878" y="380" width="334" height="40" rx="6" fill="#FFFFFF" stroke="#DDD6FE"/>
+    <text x="892" y="397" font-weight="bold" fill="#1E293B">MySQL —— 底账</text>
+    <text x="892" y="413" font-size="10.5" fill="#64748B">law_article 唯一事实源，MD5 指纹增量同步不变</text>
+
+    <rect x="878" y="426" width="334" height="40" rx="6" fill="#FFFFFF" stroke="#DDD6FE"/>
+    <text x="892" y="443" font-weight="bold" fill="#1E293B">MongoDB —— 会话记忆</text>
+    <text x="892" y="459" font-size="10.5" fill="#64748B">文档模型天然适配消息列表；自实现 ChatMemory 接口</text>
+
+    <rect x="878" y="472" width="334" height="40" rx="6" fill="#FFFFFF" stroke="#DDD6FE"/>
+    <text x="892" y="489" font-weight="bold" fill="#1E293B">Redis —— 缓存与协调</text>
+    <text x="892" y="505" font-size="10.5" fill="#64748B">配额 / 锁 / 热点缓存，回归纯缓存定位</text>
+
+    <rect x="878" y="518" width="334" height="40" rx="6" fill="#FFFFFF" stroke="#DDD6FE"/>
+    <text x="892" y="535" font-weight="bold" fill="#1E293B">Milvus —— 专业向量库</text>
+    <text x="892" y="551" font-size="10.5" fill="#64748B">亿级向量、分布式扩展；换 vector-store-milvus starter</text>
+  </g>
+  <text x="1045" y="578" text-anchor="middle" font-size="10.5" fill="#6D28D9">✦ 适合：海量数据、高并发、组件独立扩容的生产场景</text>
+
+  <!-- 切换成本条 -->
+  <rect x="40" y="612" width="1200" height="60" rx="10" fill="#1E293B"/>
+  <text x="640" y="638" text-anchor="middle" font-size="13.5" font-weight="bold" fill="#FFFFFF">切换成本 = 换 starter 依赖 + 改 application.yml + 少量 Mapper/适配代码</text>
+  <text x="640" y="659" text-anchor="middle" font-size="11.5" fill="#94A3B8">检索管线、模型路由、安全层、工具集、SSE 编排等业务代码零改动 —— 这正是面向接口编程 + Spring AI 统一抽象的价值</text>
+
+  <!-- 底部注释 -->
+  <text x="640" y="706" text-anchor="middle" font-size="11.5" fill="#64748B">学习建议：先用方案① 跑通全链路，再把"换成方案②/③"当作动手实验 —— 一次真实的存储替换演练，就是简历上最有说服力的项目叙事</text>
+  <text x="640" y="730" text-anchor="middle" font-size="10.5" fill="#94A3B8">注：无论哪套组合，"底账唯一事实源 + 向量库可随时重建"的分工原则不变</text>
+</svg>
