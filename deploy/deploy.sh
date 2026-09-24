@@ -68,8 +68,25 @@ echo "===== 3/4 重建镜像并重启 ====="
 docker compose -f "$COMPOSE_FILE" up -d --build
 docker compose -f "$COMPOSE_FILE" ps --format '  {{.Service}}  {{.Status}}'
 
-echo "===== 4/4 验收探针 ====="
-bash deploy/probes.sh
+echo "===== 4/4 等待就绪 → 验收探针 ====="
+# 容器 "Started" ≠ 应用可服务：Spring Boot 在 2C2G 上启动约 30s，
+# 容器起来就立刻探针必然 502（本脚本第一版就踩了，探针 4 项假失败）。
+# 这里轮询 /stats/home 直到返回 JSON（首字符 {）或超时 180s。
+BASE_URL=${PROBE_BASE:-http://127.0.0.1}
+ready=0
+for i in $(seq 1 60); do
+  first=$(curl -fsS -m 5 "$BASE_URL/stats/home" 2>/dev/null | head -c 1 || true)
+  if [ "$first" = "{" ]; then
+    ready=1
+    echo "  后端就绪（等待约 $((i * 3)) 秒）"
+    break
+  fi
+  sleep 3
+done
+if [ "$ready" != "1" ]; then
+  echo "  !! 180 秒仍未就绪：仍执行探针，失败请查 docker compose logs -f backend"
+fi
+bash deploy/probes.sh "$BASE_URL"
 
 echo
 echo "发布完成：$(git rev-parse --short HEAD) $(git log -1 --pretty=%s)"
