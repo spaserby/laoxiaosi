@@ -50,6 +50,33 @@ public class LawArticleBrowseService {
     }
 
     /**
+     * 单条详情 DTO（引用卡"按需展开"用）：比列表 DTO 多出章/节属与版本、位阶
+     */
+    public record ArticleDetail(String id, String lawName, String articleNo, String category,
+                                String docType, String versionInfo, String chapterInfo,
+                                String sectionInfo, String content) {
+    }
+
+    /**
+     * 按 id 取单条法条（不存在或已逻辑删除返回 null）。
+     * <p>引用卡此前依赖 SSE 引用载荷里带正文，载荷不带正文时展开按钮就消失了；
+     * 改为前端按需拉取后，正文是否在载荷里都不影响展开。
+     */
+    public ArticleDetail detail(long id) {
+        LawArticleEntity a = mapper.findById(id);
+        if (a == null || (a.getDeleted() != null && a.getDeleted() == 1)) {
+            return null;
+        }
+        return new ArticleDetail(String.valueOf(a.getId()), a.getLawName(), a.getArticleNo(),
+                a.getCategory() == null ? "" : a.getCategory(),
+                a.getDocType() == null ? "" : a.getDocType(),
+                a.getVersionInfo() == null ? "" : a.getVersionInfo(),
+                a.getChapterInfo() == null ? "" : a.getChapterInfo(),
+                a.getSectionInfo() == null ? "" : a.getSectionInfo(),
+                a.getContent() == null ? "" : a.getContent());
+    }
+
+    /**
      * 分类计数（category 为 null 的行归"未分类"）
      */
     public List<CategoryCount> categories() {

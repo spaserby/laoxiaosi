@@ -9,7 +9,7 @@ import { useChatStore } from '../stores/chat'
 import { useUserStore } from '../stores/user'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Scale, ChevronLeft, Plus, MessageSquare, Calculator, Library, Clock, User, Settings } from 'lucide-vue-next'
-import { syncVectors, syncStatus } from '../api/auth'
+import { syncVectors, syncStatus, syncScope } from '../api/auth'
 import { useDrawer } from '../composables/useDrawer'
 
 const store = useChatStore()
@@ -189,7 +189,14 @@ function logout() {
 
 /* ---------- 向量库手动同步（仅 ADMIN） ---------- */
 const syncing = ref(false)
-const syncLabel = ref('点击右侧按钮触发增量同步')
+const syncLabel = ref('可全量，或按法条勾选增量同步')
+
+/* 勾选清单（法名 → 条数 / 已向量化条数） */
+const showScope = ref(false)
+const scope = ref({ rows: [], laws: 0, articles: 0, synced: 0 })
+const scopeTableRef = ref(null)
+const selectedLaws = ref([])
+const allSelected = ref(false)
 
 async function refreshSyncStatus() {
   try {
@@ -203,16 +210,38 @@ async function refreshSyncStatus() {
   }
 }
 
-async function onSync() {
+async function openScope() {
+  showScope.value = true
+  allSelected.value = false
+  selectedLaws.value = []
+  try {
+    scope.value = await syncScope()
+  } catch (e) {
+    ElMessage.error(e.response?.status === 403 ? '需要管理员权限' : '法条清单加载失败')
+  }
+}
+
+function onScopeSelect(rows) {
+  selectedLaws.value = rows.map((r) => r.lawName)
+}
+
+function toggleAll() {
+  allSelected.value = !allSelected.value
+  scope.value.rows.forEach((r) => scopeTableRef.value?.toggleRowSelection(r, allSelected.value))
+}
+
+/** laws 为空 = 全量同步；传入法名数组 = 只同步选中的法律 */
+async function onSync(laws) {
   syncing.value = true
   try {
-    const r = await syncVectors()
+    const r = await syncVectors(laws)
     if (!r.started) {
       ElMessage.warning(r.reason || '同步任务正在执行中')
       syncing.value = false
       return
     }
-    ElMessage.success('同步任务已启动，完成后自动刷新状态')
+    showScope.value = false
+    ElMessage.success(`同步任务已启动（${laws?.length ? laws.length + ' 部法律' : '全量'}），完成后自动刷新状态`)
     syncLabel.value = '同步执行中…'
     const timer = setInterval(async () => {
       const s = await refreshSyncStatus()
@@ -338,12 +367,38 @@ async function onDelete(sessionId, title) {
             <b>向量库同步</b>
             <span>{{ syncLabel }}</span>
           </div>
-          <el-button size="small" :loading="syncing" @click="onSync">立即同步</el-button>
+          <div class="sync-btns">
+            <el-button size="small" @click="openScope">按法条勾选…</el-button>
+            <el-button size="small" type="primary" :loading="syncing" @click="onSync()">全量同步</el-button>
+          </div>
         </div>
       </div>
       <div class="set-footer">
         <el-button text type="danger" @click="logout">退出登录</el-button>
       </div>
+    </el-dialog>
+
+    <!-- 向量库同步 · 按法条勾选（只同步选中的法律，未勾选法条的向量不受影响） -->
+    <el-dialog v-model="showScope" title="向量库同步 · 按法条勾选" width="760px" append-to-body>
+      <div class="scope-bar">
+        <span>共 {{ scope.laws }} 部法律 · {{ scope.articles }} 条，已向量化 {{ scope.synced }} 条</span>
+        <el-button text size="small" @click="toggleAll">{{ allSelected ? '取消全选' : '全选' }}</el-button>
+      </div>
+      <el-table ref="scopeTableRef" :data="scope.rows" height="360" size="small" @selection-change="onScopeSelect">
+        <el-table-column type="selection" width="42" />
+        <el-table-column prop="lawName" label="法律名称" min-width="280" show-overflow-tooltip />
+        <el-table-column prop="docType" label="位阶" width="90" />
+        <el-table-column prop="category" label="领域" width="80" />
+        <el-table-column label="已同步 / 总数" width="120">
+          <template #default="{ row }">{{ row.synced }} / {{ row.cnt }}</template>
+        </el-table-column>
+      </el-table>
+      <template #footer>
+        <el-button @click="showScope = false">取消</el-button>
+        <el-button type="primary" :loading="syncing" :disabled="!selectedLaws.length" @click="onSync(selectedLaws)">
+          同步选中 {{ selectedLaws.length }} 部
+        </el-button>
+      </template>
     </el-dialog>
 
     <!-- 头像预览确认（点缩略图先放大原图，确认后才落选择） -->
@@ -473,6 +528,12 @@ body.rail .gear-btn { display: none; }
 .set-txt span { display: block; margin-top: 4px; font-size: 11.5px; color: var(--faint); }
 .set-hint { margin-top: 8px; font-size: 11px; color: var(--faint); }
 .sync-row { margin-top: 16px; }
+.sync-row .sync-btns { display: flex; gap: 6px; flex-shrink: 0; }
+/* 勾选同步对话框 */
+.scope-bar {
+  display: flex; justify-content: space-between; align-items: center;
+  margin-bottom: 8px; font-size: 12px; color: var(--faint);
+}
 .set-footer { display: flex; justify-content: flex-end; padding-top: 10px; }
 
 /* 头像选择 */

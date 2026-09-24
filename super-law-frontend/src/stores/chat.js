@@ -1,5 +1,7 @@
 import { defineStore } from 'pinia'
 import { listSessions, getSessionMessages, deleteSession, stopChat } from '../api/session'
+import { SseClient } from '../utils/sse'
+import { sessionHeaders } from '../utils/guest'
 
 /**
  * 聊天 Store：会话列表 / 消息 / 生成状态机（idle | streaming）
@@ -100,12 +102,12 @@ export const useChatStore = defineStore('chat', {
       const assistant = msgs[msgs.length - 1]
       this.phase = 'streaming'
 
-      // 登录态透传——EventSource 不支持自定义请求头，token 走 URL 参数（匿名时不拼）
-      const token = localStorage.getItem('sl_token')
-      const url = `/chat/stream?sessionId=${encodeURIComponent(sid)}&userMessage=${encodeURIComponent(text)}`
-        + (token ? `&token=${encodeURIComponent(token)}` : '')
-        + (files && files.length ? `&fileIds=${files.map(f => encodeURIComponent(f.fileId)).join(',')}` : '')
-      const es = new EventSource(url)
+      // 凭证（token / 匿名凭据）走请求头，问题走 POST 请求体——URL 里不再出现任何敏感参数。
+      // 原先 token 与 userMessage 都拼在 URL 上，而 URL 会进 nginx/代理访问日志（P0 安全整改）。
+      const es = new SseClient('/chat/stream', {
+        headers: sessionHeaders(),
+        body: { sessionId: sid, userMessage: text, fileIds: (files || []).map((f) => f.fileId) }
+      })
       this.es = es
 
       // SSE data 已 JSON 编码（防前导空格被 SSE 协议剥离）；解析失败降级用原文
@@ -201,8 +203,10 @@ export const useChatStore = defineStore('chat', {
         this.finish(sid)
       })
       es.addEventListener('error', (e) => {
-        // 后端命名 error 事件带 data；连接级错误无 data（如服务中断）
+        // 后端命名 error 事件带 data；连接级错误带 status/message（403 越权、链路中断等）
         if (e.data) assistant.content += `\n\n[生成失败] ${e.data}`
+        else if (e.status === 403) assistant.content += '\n\n[无权访问] 该会话不属于当前身份，请新建咨询。'
+        else if (e.message) assistant.content += `\n\n[连接中断] ${e.message}`
         this.finish(sid)
       })
     },

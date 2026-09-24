@@ -53,4 +53,14 @@ public class LawArticleController {
     public Map<String, Object> categories() {
         return Map.of("code", 200, "data", browseService.categories());
     }
+
+    /**
+     * 单条法条详情（引用卡按需展开：SSE 引用载荷不带正文时，前端据此补正文/章节属）
+     */
+    @GetMapping("/detail")
+    public Map<String, Object> detail(@RequestParam("id") long id) {
+        LawArticleBrowseService.ArticleDetail data = browseService.detail(id);
+        return data == null ? Map.of("code", 404, "message", "法条不存在")
+                : Map.of("code", 200, "data", data);
+    }
 }

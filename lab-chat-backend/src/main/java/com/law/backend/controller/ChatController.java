@@ -4,6 +4,7 @@ import com.law.backend.auth.AuthService;
 import com.law.backend.quota.QuotaService;
 import com.law.backend.service.ChatFileService;
 import com.law.backend.service.ChatService;
+import com.law.backend.service.SessionOwnershipService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.redisson.api.RedissonClient;
@@ -14,6 +15,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.ExceptionHandler;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RequestPart;
 import org.springframework.web.bind.annotation.RestController;
@@ -46,6 +48,8 @@ public class ChatController {
     private final AuthService authService;
     /** 会话附件（上传解析暂存） */
     private final ChatFileService chatFileService;
+    /** 会话归属校验（登录按 userId，匿名按 X-Guest-Key） */
+    private final com.law.backend.service.SessionOwnershipService ownershipService;
 
     /**
      * 文档上传：校验+解析+暂存 Redis 24h，返回 fileId 列表供 stream 携带
@@ -80,20 +84,39 @@ public class ChatController {
                                                 @RequestParam(required = false) List<String> fileIds,
                                                 @AuthenticationPrincipal Long userId,
                                                 ServerWebExchange exchange) {
-        log.info("收到聊天请求: sessionId={}, message={}", sessionId, userMessage);
+        return streamInternal(sessionId, userMessage, fileIds, userId, exchange);
+    }
+
+    /** POST 流式聊天请求体（会话 ID + 问题 + 附件） */
+    public record StreamRequest(String sessionId, String userMessage, List<String> fileIds) {
+    }
+
+    /**
+     * 流式聊天（POST 版，前端默认走这条）。
+     * <p>★ 为什么用 POST：GET 只能把参数拼在 URL 上，而 URL 会进 nginx/代理访问日志——
+     * token 与咨询原文都曾因此落盘。POST 把两者放进请求体，日志里只剩路径。
+     */
+    @PostMapping(value = "/stream", consumes = MediaType.APPLICATION_JSON_VALUE,
+            produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public Flux<ServerSentEvent<String>> streamPost(@RequestBody StreamRequest request,
+                                                     @AuthenticationPrincipal Long userId,
+                                                     ServerWebExchange exchange) {
+        return streamInternal(request.sessionId(), request.userMessage(), request.fileIds(),
+                userId, exchange);
+    }
+
+    private Flux<ServerSentEvent<String>> streamInternal(String sessionId, String userMessage,
+                                                         List<String> fileIds, Long userId,
+                                                         ServerWebExchange exchange) {
+        // ★ 日志不含问题正文：法律咨询内容属敏感个人信息，只记长度等元数据（P0 安全整改）
+        log.info("收到聊天请求: sessionId={}, 问题长度={}, 附件数={}", sessionId,
+                userMessage == null ? 0 : userMessage.length(), fileIds == null ? 0 : fileIds.size());
         // 配额上下文（登录=u:{userId}+role；游客=ip:{ip} 共享池）
         QuotaService.QuotaCtx quotaCtx = quotaContext(userId, exchange);
-        // 登录增强——带有效 token（Authorization 头或 ?token= 参数，JwtAuthFilter 已解析）
-        // 时把会话归属到 userId；匿名会话 userId 为 null 不受影响（聊天保持匿名可用）
-        if (userId != null) {
-            try {
-                redissonClient.getBucket("chat:owner:" + sessionId)
-                        .set(String.valueOf(userId), java.time.Duration.ofHours(24));
-            } catch (Exception e) {
-                log.warn("会话归属记录失败（不影响对话）: sessionId={}, error={}", sessionId, e.getMessage());
-            }
-        }
-        return chatService.chat(sessionId, userMessage, quotaCtx, fileIds);
+        // 会话归属：登录按 userId，匿名按 X-Guest-Key 凭据；他人会话直接 403（不再有"无主会话"）
+        SessionOwnershipService.Owner owner = ownershipService.resolve(exchange.getRequest().getHeaders(), userId);
+        ownershipService.claim(sessionId, owner);
+        return chatService.chat(sessionId, userMessage, quotaCtx, fileIds, owner.key());
     }
 
     /**
@@ -115,11 +138,24 @@ public class ChatController {
 
     /**
      * 停止生成：取消指定会话正在进行的 LLM 流式调用
+     * <p>★ 归属校验：停止是跨实例的 Redis 信号，若不校验，任何人可用他人 sessionId 打断别人的回答。
      */
     @PostMapping("/stop")
-    public Map<String, Object> stop(@RequestParam("sessionId") String sessionId) {
+    public Map<String, Object> stop(@RequestParam("sessionId") String sessionId,
+                                    @AuthenticationPrincipal Long userId,
+                                    ServerWebExchange exchange) {
+        ownershipService.require(sessionId,
+                ownershipService.resolve(exchange.getRequest().getHeaders(), userId));
         chatService.stop(sessionId);
         return Map.of("code", 200, "message", "ok");
+    }
+
+    /** 越权访问会话 → 403（P0 安全整改） */
+    @ExceptionHandler(com.law.backend.service.SessionAccessDeniedException.class)
+    public org.springframework.http.ResponseEntity<Map<String, String>> handleAccessDenied(
+            com.law.backend.service.SessionAccessDeniedException e) {
+        return org.springframework.http.ResponseEntity.status(org.springframework.http.HttpStatus.FORBIDDEN)
+                .body(Map.of("message", e.getMessage()));
     }
 
     /**

@@ -29,15 +29,16 @@ public class GenInitSql {
                 "jdbc:postgresql://127.0.0.1:5432/lab_legal_kb", "postgres", System.getenv().getOrDefault("PG_PASSWORD", ""));
              Statement st = c.createStatement();
              ResultSet rs = st.executeQuery("""
-                     select id, law_name, article_no, category, title, version_info,
+                     select id, law_name, article_no, category, doc_type, title, version_info,
                             chapter_info, section_info, content, deleted
                      from law_article order by id""")) {
             while (rs.next()) {
-                data.append("INSERT INTO law_article (id, law_name, article_no, category, title, version_info, chapter_info, section_info, content, deleted) VALUES (")
+                data.append("INSERT INTO law_article (id, law_name, article_no, category, doc_type, title, version_info, chapter_info, section_info, content, deleted) VALUES (")
                         .append(rs.getLong("id")).append(", ")
                         .append(q(rs.getString("law_name"))).append(", ")
                         .append(q(rs.getString("article_no"))).append(", ")
                         .append(q(rs.getString("category"))).append(", ")
+                        .append(q(rs.getString("doc_type"))).append(", ")
                         .append(q(rs.getString("title"))).append(", ")
                         .append(q(rs.getString("version_info"))).append(", ")
                         .append(q(rs.getString("chapter_info"))).append(", ")
@@ -46,7 +47,8 @@ public class GenInitSql {
                         .append(rs.getInt("deleted"))
                         .append(") ON CONFLICT (id) DO UPDATE SET ")
                         .append("law_name = EXCLUDED.law_name, article_no = EXCLUDED.article_no, ")
-                        .append("category = EXCLUDED.category, title = EXCLUDED.title, ")
+                        .append("category = EXCLUDED.category, doc_type = EXCLUDED.doc_type, ")
+                        .append("title = EXCLUDED.title, ")
                         .append("version_info = EXCLUDED.version_info, chapter_info = EXCLUDED.chapter_info, ")
                         .append("section_info = EXCLUDED.section_info, content = EXCLUDED.content, ")
                         .append("deleted = EXCLUDED.deleted;\n");

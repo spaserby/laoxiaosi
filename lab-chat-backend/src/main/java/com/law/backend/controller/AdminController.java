@@ -6,13 +6,16 @@ import lombok.extern.slf4j.Slf4j;
 import org.redisson.api.RedissonClient;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -46,9 +49,21 @@ public class AdminController {
 
     /**
      * 触发向量库增量同步（异步执行，立即返回；分批续传，中断后重点从 ledger 断点继续）
+     * <p>
+     * 可选请求体 {@code {"laws": ["《中华人民共和国社会保险法》", ...]}}：只同步勾选的法律，
+     * 缺省或空数组 = 全量。作用域只影响本次扫描/回收范围，增量语义（MD5 指纹）不变，
+     * 已同步且未变更的条文依旧跳过，不重复消耗 embedding。
      */
     @PostMapping("/sync-vectors")
-    public Map<String, Object> syncVectors() {
+    public Map<String, Object> syncVectors(@RequestBody(required = false) Map<String, Object> body) {
+        List<String> laws = new ArrayList<>();
+        if (body != null && body.get("laws") instanceof List<?> list) {
+            for (Object o : list) {
+                if (o != null && !String.valueOf(o).isBlank()) {
+                    laws.add(String.valueOf(o));
+                }
+            }
+        }
         var running = redissonClient.getBucket(KEY_RUNNING);
         if (!running.trySet("1", RUNNING_TTL.toMinutes(), java.util.concurrent.TimeUnit.MINUTES)) {
             return Map.of("started", false, "reason", "同步任务正在执行中，请稍后再试");
@@ -57,17 +72,37 @@ public class AdminController {
         Mono.fromRunnable(() -> {
             String error = null;
             try {
-                error = importService.syncLedgerToVector();
+                error = importService.syncLedgerToVector(laws.isEmpty() ? null : laws);
             } catch (Exception e) {
                 error = e.getMessage();
             }
             redissonClient.getMap(KEY_STATE).putAll(Map.of(
                     "lastResult", error == null ? "成功" : ("失败: " + error),
+                    "lastScope", laws.isEmpty() ? "全量" : (laws.size() + " 部法律"),
                     "lastSyncAt", String.valueOf(System.currentTimeMillis())));
             running.delete();
-            log.info("管理端手动同步结束: result={}", error == null ? "成功" : error);
+            log.info("管理端手动同步结束: scope={}, result={}", laws.isEmpty() ? "全量" : laws.size() + " 部",
+                    error == null ? "成功" : error);
         }).subscribeOn(Schedulers.boundedElastic()).subscribe();
-        return Map.of("started", true);
+        return Map.of("started", true, "laws", laws.size());
+    }
+
+    /**
+     * 同步清单（勾选界面数据源）：按法名返回条数 / 已向量化条数 / 业务领域 / 效力位阶
+     */
+    @GetMapping("/sync-scope")
+    public Map<String, Object> syncScope() {
+        List<Map<String, Object>> rows = importService.syncScope();
+        long total = 0, synced = 0;
+        for (Map<String, Object> r : rows) {
+            total += toLong(r.get("cnt"));
+            synced += toLong(r.get("synced"));
+        }
+        return Map.of("rows", rows, "laws", rows.size(), "articles", total, "synced", synced);
+    }
+
+    private long toLong(Object o) {
+        return o instanceof Number n ? n.longValue() : parseLong(String.valueOf(o));
     }
 
     /**

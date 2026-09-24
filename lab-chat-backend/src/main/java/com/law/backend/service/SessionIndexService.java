@@ -33,13 +33,13 @@ public class SessionIndexService {
      * 每轮对话调用：首轮创建索引（title = 首条用户消息前 20 字），后续轮次仅刷新 updatedAt
      * （upsert 的 on conflict 只更新 updated_at，title 不被覆盖）
      */
-    public void touch(String sessionId, String firstMessage) {
+    public void touch(String sessionId, String firstMessage, String ownerKey) {
         try {
             long now = System.currentTimeMillis();
             String title = (firstMessage == null || firstMessage.isBlank())
                     ? "新对话"
                     : (firstMessage.length() > TITLE_MAX ? firstMessage.substring(0, TITLE_MAX) : firstMessage);
-            sessionMapper.upsert(sessionId, title, now, now);
+            sessionMapper.upsert(sessionId, title, now, now, ownerKey);
         } catch (Exception e) {
             log.warn("会话索引写入失败（不影响对话）: sessionId={}, error={}", sessionId, e.getMessage());
         }
@@ -48,9 +48,9 @@ public class SessionIndexService {
     /**
      * 会话列表：按 updatedAt 倒序（最近对话在前）
      */
-    public List<SessionMeta> list() {
+    public List<SessionMeta> list(String ownerKey) {
         try {
-            return sessionMapper.findAll();
+            return sessionMapper.findAllByOwner(ownerKey);
         } catch (Exception e) {
             log.warn("会话索引读取失败，返回空列表: {}", e.getMessage());
             return List.of();
@@ -60,9 +60,9 @@ public class SessionIndexService {
     /**
      * 删除会话索引条目（消息本体由 ChatMemory.clear 删除）
      */
-    public void remove(String sessionId) {
+    public void remove(String sessionId, String ownerKey) {
         try {
-            sessionMapper.delete(sessionId);
+            sessionMapper.deleteOwned(sessionId, ownerKey);
         } catch (Exception e) {
             log.warn("会话索引删除失败: sessionId={}, error={}", sessionId, e.getMessage());
         }

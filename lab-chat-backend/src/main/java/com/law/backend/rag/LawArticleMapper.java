@@ -20,6 +20,34 @@ public interface LawArticleMapper {
     @Select("select * from law_article where deleted = 0 order by id")
     List<LawArticleEntity> findAllActive();
 
+    /** 指定法名的有效条文（勾选同步的作用域） */
+    @Select({"<script>",
+            "select * from law_article where deleted = 0 and law_name in",
+            "<foreach collection='lawNames' item='n' open='(' separator=',' close=')'>#{n}</foreach>",
+            " order by id",
+            "</script>"})
+    List<LawArticleEntity> findAllActiveByLawNames(@Param("lawNames") List<String> lawNames);
+
+    /** 指定法名的条文 id（勾选同步时"删除回收"的作用域边界） */
+    @Select({"<script>",
+            "select id from law_article where deleted = 0 and law_name in",
+            "<foreach collection='lawNames' item='n' open='(' separator=',' close=')'>#{n}</foreach>",
+            "</script>"})
+    List<Long> findIdsByLawNames(@Param("lawNames") List<String> lawNames);
+
+    /**
+     * 同步清单（管理端勾选界面）：按法名汇总条数与已向量化条数。
+     * article_id 在 rag_ledger 中是 VARCHAR，需把 BIGINT 的 id 转文本再关联。
+     */
+    @Select("select a.law_name as \"lawName\", coalesce(a.category,'') as \"category\","
+            + " coalesce(a.doc_type,'') as \"docType\", count(*) as \"cnt\","
+            + " count(l.article_id) as \"synced\""
+            + " from law_article a left join rag_ledger l on l.article_id = a.id::text"
+            + " where a.deleted = 0"
+            + " group by a.law_name, a.category, a.doc_type"
+            + " order by a.doc_type, a.category, a.law_name")
+    List<Map<String, Object>> listSyncScope();
+
     /** 主键查（Small-to-Big 还原整条全文） */
     @Select("select * from law_article where id = #{id}")
     LawArticleEntity findById(@Param("id") Long id);

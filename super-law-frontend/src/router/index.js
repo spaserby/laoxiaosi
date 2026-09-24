@@ -19,4 +19,14 @@ const router = createRouter({
   ]
 })
 
+// 已登录用户再进登录页 → 直接回首页。
+// 场景：登录页被分享给朋友（或加书签/收藏），登录成功后再次打开该链接时，
+// 不该还停在登录表单上。
+router.beforeEach((to) => {
+  if (to.name === 'auth' && localStorage.getItem('sl_token')) {
+    return { path: '/' }
+  }
+  return true
+})
+
 export default router

@@ -18,6 +18,12 @@ server {
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        # ★ 关闭 API 访问日志（P0 安全整改）：默认日志格式记录完整 request line，
+        #   而历史上 token 与咨询原文都拼在 URL 上，会连人带内容一起落到 access.log。
+        #   前端现已改为 POST + 请求头/请求体传参（URL 里不再有敏感参数），这里再关一层，
+        #   确保任何老客户端或第三方调用也无法把内容写进磁盘日志。
+        #   如需排查 API 访问，请在 http 层自定义 log_format 只用 $uri（不带 $args）。
+        access_log off;
         # SSE 三件套：关缓冲 + 关缓存 + 长超时——缺一则流式回答在生产变整包下发
         proxy_buffering off;
         proxy_cache off;

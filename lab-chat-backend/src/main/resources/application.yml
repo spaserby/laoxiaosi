@@ -4,6 +4,13 @@
 # ============================================================
 server:
   port: 8082
+  # ★ 反向代理后的真实客户端 IP（P1 安全整改）：nginx 已设 X-Forwarded-For，
+  #   不开这个开关时 getRemoteAddress() 拿到的是 nginx 自己的 IP，
+  #   同机部署下所有游客会共用一个配额池（配额形同虚设）。
+  #   framework = 用 Spring 的 ForwardedHeaderTransformer 解析转发头。
+  #   ⚠ 前提：后端端口不得直接对公网暴露（必须只经 nginx 回源），
+  #     否则客户端可伪造 X-Forwarded-For 绕过游客限流。
+  forward-headers-strategy: framework
 
 spring:
   application:
@@ -187,11 +194,11 @@ legal:
       import-on-startup: false  # 改为管理端按钮手动触发（/admin/sync-vectors）
     # ★ 用户认证（JWT 无状态 + Mock 短信；注册/登录/验证码重置密码）
     auth:
-      jwt-secret: ${JWT_SECRET:change-me-in-production-legal-assistant-dev-secret}   # 生产用环境变量替换
+      jwt-secret: ${JWT_SECRET:}      # 生产必须用环境变量注入强随机值；留空时开发态启动生成随机密钥（见 JwtService），prod profile 下直接拒绝启动
       jwt-expire-hours: 24
       # 首发管理员提权（上线时注入 BOOTSTRAP_ADMIN=已注册用户名，启动即提权；首发后清除）
       bootstrap-admin: ${BOOTSTRAP_ADMIN:}
-      sms-mock-echo: true      # 开发期验证码回显（/auth/sms-code 响应 devCode）；接真实短信后必须 false
+      sms-mock-echo: ${SMS_MOCK_ECHO:false}   # 验证码回显：默认关（开着等于任意手机号可被接管）；本地调试显式设 true
       sms-code-ttl-seconds: 300
       sms-resend-interval-seconds: 60
       sms-daily-limit: 10
@@ -267,4 +274,5 @@ legal:
 
 logging:
   level:
-    com.law.backend: debug
+    # ★ 生产不要开 debug：DEBUG 会打印请求/检索细节，法律咨询内容属敏感信息（P0 安全整改）
+    com.law.backend: ${LOG_LEVEL_BACKEND:info}

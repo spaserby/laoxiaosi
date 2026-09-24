@@ -49,7 +49,8 @@ public class SearchLawTool {
     public String searchLaw(
             @ToolParam(description = "检索关键词。不要照抄用户原话，请提炼为法律术语，"
                     + "例如用户问'被公司辞退了能拿多少钱'应检索'解除劳动合同 经济补偿 标准'") String query,
-            @ToolParam(description = "可选分类过滤，如 劳动 / 民事 / 刑事；不需要限制时不传", required = false) String category,
+            @ToolParam(description = "可选业务领域过滤，取值：劳动 / 民事 / 商事 / 刑事 / 行政 / 经济 / "
+                    + "程序 / 宪法 / 环境 / 社会；不需要限制时不传", required = false) String category,
             ToolContext toolContext) {
         // RAG 总开关关闭时，明确告知模型走通用知识
         if (!ragProperties.isEnabled()) {
