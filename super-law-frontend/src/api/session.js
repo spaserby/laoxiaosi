@@ -1,6 +1,14 @@
 import axios from 'axios'
+import { sessionHeaders } from '../utils/guest'
 
 const http = axios.create({ timeout: 15000 })
+
+// ★ 会话接口必须带凭证（P0 安全整改）：后端按 Authorization（登录态）/ X-Guest-Key（匿名凭据）
+//   判定会话归属，不带凭证的请求拿不到任何历史，读取/删除他人会话返回 403。
+http.interceptors.request.use((config) => {
+  Object.assign(config.headers, sessionHeaders())
+  return config
+})
 
 // 会话列表（updatedAt 倒序）
 export const listSessions = () => http.get('/session/list').then(r => r.data.data)

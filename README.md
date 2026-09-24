@@ -112,7 +112,7 @@ legal-assistant/
 ## 快速开始
 
 ```bash
-# 1. 启动基础设施（PG + pgvector + Redis；首次启动自动执行 db/init.sql 建表并导入 468 条法条）
+# 1. 启动基础设施（PG + pgvector + Redis；首次启动自动执行 db/init.sql 建表并导入 2523 条法条）
 docker compose up -d
 # 本机已有 PG/Redis（如系统自带）时跳过本步，手动初始化：
 #   createdb lab_legal_kb && psql -U postgres -d lab_legal_kb -f db/init.sql
@@ -129,10 +129,33 @@ cd super-law-frontend && npm install && npm run dev
 # 浏览器打开 http://localhost:5173
 
 # 4. 首个管理员：注册账号后设 BOOTSTRAP_ADMIN=<用户名> 重启后端提权，
-#    登录管理端「设置 → 向量库同步 → 立即同步」重建向量（一次性 embedding 费用）
+#    登录管理端「设置 → 向量库同步」重建向量（一次性 embedding 费用）：
+#      全量同步 —— 一次向量化库内全部法条
+#      按法条勾选 —— 只同步选中的法律（未勾选法条的向量不受影响，适合分批控成本）
 ```
 
 调试备选：后端内置聊天页 `http://localhost:8082`；评估门禁 `mvn test -pl lab-chat-backend`（端到端链路评估 `-Deval.e2e=true` 手动触发，消耗模型额度）。
+
+## 法条数据来源与扩充
+
+法条底账（`law_article`）以**国家法律法规数据库**（flk.npc.gov.cn，全国人大常委会办公厅主办）
+的官方 Word 原件为唯一来源，只收录**现行有效**版本（官方时效性 `sxx=3`），不收录已废止、
+已被修改的历史版本与尚未生效的新法。
+
+两个维度区分法条：`category` = 业务领域（劳动/民事/商事/刑事/行政/经济/程序/宪法/环境/社会），
+`doc_type` = 效力位阶（宪法/法律/行政法规/司法解释/监察法规）。
+
+扩充／新增法域：
+
+```bash
+# 1. 在清单里登记要导入的法律（法名 / 部门 codeId / 位阶 / 领域 / 起始ID）
+#    scripts/ingest-law-map.tsv
+# 2. 抓官方 docx 并生成幂等 SQL（只写文件，不碰数据库）
+java -cp postgresql-42.7.4.jar scripts/IngestOfficial.java scripts/ingest-law-map.tsv db/import-law.sql
+# 3. 入库（无 psql 环境用 RunInitSql）
+java -cp postgresql-42.7.4.jar scripts/RunInitSql.java db/import-law.sql
+# 4. 管理端「向量库同步 → 按法条勾选」同步新导入的法律
+```
 
 ## 检索管线（五阶段）
 

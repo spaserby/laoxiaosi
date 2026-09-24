@@ -268,6 +268,18 @@ public class ChatService {
      */
     public Flux<ServerSentEvent<String>> chat(String sessionId, String userMessage,
                                               QuotaService.QuotaCtx quotaCtx, List<String> fileIds) {
+        return chat(sessionId, userMessage, quotaCtx, fileIds, null);
+    }
+
+    /**
+     * 流式聊天（含会话归属键）：ownerKey 决定会话索引落在谁名下，
+     * 会话列表/读取/删除/停止生成都按它鉴权（{@code u:{userId}} 或 {@code g:{guestKey}}）。
+     *
+     * @param ownerKey 归属键；null = 无凭据调用方（会话不进任何人的列表）
+     */
+    public Flux<ServerSentEvent<String>> chat(String sessionId, String userMessage,
+                                              QuotaService.QuotaCtx quotaCtx, List<String> fileIds,
+                                              String ownerKey) {
         // 拒答拦截——命中即短路返回规范话术，不调模型、不落记忆、不扣配额（平台责任）
         String refusal = safetyGuard.checkRefusal(userMessage);
         if (refusal != null) {
@@ -362,7 +374,7 @@ public class ChatService {
                     // 思考过程可见化：prepare 在 boundedElastic 线程实时发 stage 事件进 unicast sink，
                     // 前端首 token 前即可看到"路由/改写/检索/生成"进度，消除黑盒转圈
                     Sinks.Many<String> stageSink = Sinks.many().unicast().onBackpressureBuffer();
-                    Mono<ChatContext> prepared = Mono.fromCallable(() -> prepare(sessionId, userMessage, stageSink, attachBlock, memorySuffix, finalMedia))
+                    Mono<ChatContext> prepared = Mono.fromCallable(() -> prepare(sessionId, userMessage, stageSink, attachBlock, memorySuffix, finalMedia, ownerKey))
                             // 阻塞预处理隔离到弹性线程池，服务器线程不被首 token 前的同步 IO 独占
                             .subscribeOn(Schedulers.boundedElastic())
                             .doFinally(s -> stageSink.tryEmitComplete())
@@ -450,12 +462,12 @@ public class ChatService {
      */
     private ChatContext prepare(String sessionId, String userMessage, Sinks.Many<String> stages,
                                 String attachBlock, String memorySuffix,
-                                List<org.springframework.ai.content.Media> media) {
+                                List<org.springframework.ai.content.Media> media, String ownerKey) {
         // 1. 从 Redis 加载历史对话 + 记录用户消息（附件只落占位标注，全文不进记忆） + 刷新会话索引
         emitStage(stages, "加载会话记忆…");
         List<Message> history = chatMemory.get(sessionId);
         chatMemory.add(sessionId, List.of(new UserMessage(userMessage + memorySuffix)));
-        sessionIndexService.touch(sessionId, userMessage);
+        sessionIndexService.touch(sessionId, userMessage, ownerKey);
 
         // 2. 紧急置顶警告（刑事/人身危险）
         String urgent = safetyGuard.urgentWarning(userMessage);

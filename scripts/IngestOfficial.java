@@ -1,0 +1,602 @@
+import java.io.ByteArrayInputStream;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.time.Duration;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipInputStream;
+
+/**
+ * Official-source law ingester (National Laws and Regulations Database, flk.npc.gov.cn).
+ * <p>
+ * Pipeline: read the law whitelist (scripts/ingest-law-map.tsv, UTF-8) -> enumerate the
+ * official listing per department -> keep only currently-effective versions (sxx=3) ->
+ * download the official .docx -> split into articles with chapter/section/bian context ->
+ * emit an idempotent INSERT script for law_article.
+ * <p>
+ * Writes SQL only; never touches the database. Load the produced file with RunInitSql.java.
+ * <p>
+ * ASCII-only on purpose (same reason as GenInitSql): JDK17 single-file source mode decodes
+ * .java with the platform default charset (GBK on Windows), which would corrupt any
+ * non-ASCII literal. All Chinese text comes from the TSV whitelist or the fetched documents.
+ * <p>
+ * Usage: java -cp <jdbc jar> scripts/IngestOfficial.java [map.tsv] [out.sql]
+ */
+public class IngestOfficial {
+
+    private static final String LIST_URL = "https://flk.npc.gov.cn/law-search/search/list";
+    private static final String DOCX_URL = "https://flk.npc.gov.cn/law-search/download/mobile?format=docx&bbbs=";
+    private static final String HOME_URL = "https://flk.npc.gov.cn/";
+    /**
+     * A browser User-Agent is required: the site's WAF answers plain clients with a 307 to a
+     * challenge page, and only a warmed-up session (see {@link #warmUp()}) gets JSON back.
+     */
+    private static final String UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            + " (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
+
+    /** Article numbering charset; "qian" (thousand) is required: the Civil Code goes to 1260. */
+    private static final String CN = "\u96f6\u4e00\u4e8c\u4e09\u56db\u4e94\u516d\u4e03\u516b\u4e5d\u5341\u767e\u5343\u4e24";
+    private static final Pattern P_ART = Pattern.compile("^" + "\u7b2c" + "([" + CN + "\\d]+)"
+            + "\u6761" + "(" + "\u4e4b" + "([" + CN + "\\d]+))?");
+    private static final Pattern P_BIAN = Pattern.compile("^" + "\u7b2c" + "([" + CN + "\\d]+)"
+            + "\u7f16" + "\\s*(.*)$");
+    private static final Pattern P_ZHANG = Pattern.compile("^" + "\u7b2c" + "([" + CN + "\\d]+)"
+            + "\u7ae0" + "\\s*(.*)$");
+    private static final Pattern P_JIE = Pattern.compile("^" + "\u7b2c" + "([" + CN + "\\d]+)"
+            + "\u8282" + "\\s*(.*)$");
+    private static final Pattern P_APPENDIX = Pattern.compile("^" + "\u9644" + "\\s*"
+            + "\u5f55" + "\\s*[\uff1a:]?(.*)$");
+    private static final Pattern P_TOC = Pattern.compile("^" + "\u76ee" + "\\s*"
+            + "\u5f55" + "\\s*$");
+
+    private static final HttpClient HTTP = HttpClient.newBuilder()
+            .connectTimeout(Duration.ofSeconds(20))
+            // ALWAYS, not NORMAL: the official file host answers with an https->http redirect
+            // for the .docx payload, which NORMAL would refuse as a downgrade.
+            .followRedirects(HttpClient.Redirect.ALWAYS)
+            .cookieHandler(new java.net.CookieManager())   // keep the WAF session cookie
+            .build();
+
+    /** Wholesale row of the whitelist. */
+    private record LawSpec(String lawName, int deptCode, String docType, String category, long idStart) {
+    }
+
+    /** One parsed article: number token, body, and its bian/zhang/jie context. */
+    private static final class Art {
+        String no;
+        StringBuilder text = new StringBuilder();
+        String bian, zhang, jie;
+
+        Art(String no, String bian, String zhang, String jie) {
+            this.no = no;
+            this.bian = bian;
+            this.zhang = zhang;
+            this.jie = jie;
+        }
+    }
+
+    public static void main(String[] args) throws Exception {
+        Path map = Path.of(args.length > 0 ? args[0] : "scripts/ingest-law-map.tsv");
+        Path out = Path.of(args.length > 1 ? args[1] : "db/import-law.sql");
+        List<LawSpec> specs = readMap(map);
+        System.out.println("whitelist entries: " + specs.size());
+        warmUp();
+
+        // Enumerate each department once, then match whitelist titles against it.
+        Map<Integer, List<String>> rowsByDept = new LinkedHashMap<>();
+        for (LawSpec s : specs) {
+            if (!rowsByDept.containsKey(s.deptCode())) {
+                rowsByDept.put(s.deptCode(), fetchDept(s.deptCode()));
+            }
+        }
+
+        StringBuilder sql = new StringBuilder();
+        sql.append("-- Generated by scripts/IngestOfficial.java from the National Laws and Regulations\n");
+        sql.append("-- Database (flk.npc.gov.cn). Source rows are official .docx originals; only\n");
+        sql.append("-- currently-effective versions (sxx=3) are imported. Idempotent by fixed id.\n\n");
+
+        int totalArts = 0, ok = 0;
+        List<LawSpec> missing = new ArrayList<>();
+        for (LawSpec s : specs) {
+            String row = findRow(rowsByDept.get(s.deptCode()), s.lawName());
+            if (row == null) {
+                missing.add(s);
+                System.out.println("  NOT FOUND in dept " + s.deptCode() + ": " + s.lawName());
+                continue;
+            }
+            String bbbs = field(row, "bbbs");
+            String gbrq = field(row, "gbrq");
+            String zdjg = field(row, "zdjgName");
+            String version = zdjg + " " + gbrq;
+            List<String> paras = docxParagraphs(bbbs);
+            Parsed p = parse(paras);
+            if (p.arts.isEmpty()) {
+                System.out.println("  SKIP (no article structure): " + s.lawName());
+                continue;
+            }
+            String block = emit(sql, s, p, version);
+            totalArts += p.arts.size() + (p.appendix.isEmpty() ? 0 : 1);
+            ok++;
+            System.out.println("  " + pad(p.arts.size(), 4) + " arts  "
+                    + "bian=" + p.bianCount + " zhang=" + p.zhangCount + " jie=" + p.jieCount
+                    + (p.appendix.isEmpty() ? "" : "  +appendix")
+                    + "  ids " + s.idStart() + "-" + (s.idStart() + p.arts.size() + (p.appendix.isEmpty() ? 0 : 1) - 1)
+                    + "  " + s.lawName()
+                    + (p.warnings.isEmpty() ? "" : "   WARN " + p.warnings.get(0))
+                    + (block == null ? "" : ""));
+            sleep(400);                                // stay under the WAF rate limit
+        }
+
+        Files.createDirectories(out.getParent());
+        Files.writeString(out, sql.toString(), StandardCharsets.UTF_8);
+        System.out.println("\nimported laws: " + ok + "/" + specs.size()
+                + ", article rows: " + totalArts + " -> " + out.toAbsolutePath());
+        if (!missing.isEmpty()) {
+            System.out.println("unmatched (fix the title in the map):");
+            for (LawSpec s : missing) {
+                System.out.println("  - " + s.lawName());
+            }
+        }
+    }
+
+    private static String pad(int n, int width) {
+        String s = String.valueOf(n);
+        while (s.length() < width) {
+            s = " " + s;
+        }
+        return s;
+    }
+
+    // ---------------------------------------------------------------- whitelist
+
+    private static List<LawSpec> readMap(Path map) throws Exception {
+        List<LawSpec> out = new ArrayList<>();
+        for (String line : Files.readAllLines(map, StandardCharsets.UTF_8)) {
+            String t = line.strip();
+            if (t.isEmpty() || t.startsWith("#")) {
+                continue;
+            }
+            String[] c = line.split("\t");
+            if (c.length < 5) {
+                throw new IllegalArgumentException("bad map row (need 5 tab-separated columns): " + line);
+            }
+            out.add(new LawSpec(c[0].strip(), Integer.parseInt(c[1].strip()), c[2].strip(),
+                    c[3].strip(), Long.parseLong(c[4].strip())));
+        }
+        return out;
+    }
+
+    // ---------------------------------------------------------------- official API
+
+    /** Fetch every page of one department's listing (all validity states). */
+    private static List<String> fetchDept(int dept) throws Exception {
+        List<String> rows = new ArrayList<>();
+        int total = Integer.MAX_VALUE;
+        for (int page = 1; page <= 60 && rows.size() < total; page++) {
+            String body = "{\"orderByParam\":{\"order\":\"-1\",\"sort\":\"\"},\"flfgCodeId\":[" + dept
+                    + "],\"zdjgCodeId\":[],\"gbrqYear\":[],\"searchType\":1,\"searchRange\":\"1\","
+                    + "\"searchContent\":\"\",\"pageNum\":" + page + ",\"pageSize\":20}";
+            String json = null;
+            List<String> page1 = List.of();
+            for (int attempt = 0; attempt < 3 && page1.isEmpty(); attempt++) {
+                if (attempt > 0) {
+                    sleep(1200L * attempt);           // the listing endpoint throttles bursts
+                }
+                json = post(LIST_URL, body);
+                page1 = splitRows(json);
+            }
+            if (page1.isEmpty()) {
+                System.out.println("dept " + dept + ": page " + page + " empty, stopping");
+                break;
+            }
+            total = Integer.parseInt(num(json, "total"));
+            rows.addAll(page1);
+            sleep(500);                                // stay under the WAF rate limit
+        }
+        System.out.println("dept " + dept + ": listed " + rows.size() + " of " + total + " docs");
+        return rows;
+    }
+
+    /** Split a listing response into per-row chunks (each chunk starts at its "bbbs"). */
+    private static List<String> splitRows(String json) {
+        List<String> chunks = new ArrayList<>();
+        Matcher m = Pattern.compile("\"bbbs\"\\s*:").matcher(json);
+        int last = -1;
+        while (m.find()) {
+            if (last >= 0) {
+                chunks.add(json.substring(last, m.start()));
+            }
+            last = m.start();
+        }
+        if (last >= 0) {
+            chunks.add(json.substring(last));
+        }
+        return chunks;
+    }
+
+    /** Match a whitelist title against the listing, keeping only the effective version (sxx=3). */
+    private static String findRow(List<String> rows, String lawName) {
+        String want = normTitle(lawName);
+        for (String row : rows) {
+            String title = normTitle(field(row, "title"));
+            String sxx = num(row, "sxx");
+            if (want.equals(title) && "3".equals(sxx)) {
+                return row;
+            }
+        }
+        return null;
+    }
+
+    /** Title comparison ignores whitespace and full/half-width bracket style. */
+    private static String normTitle(String s) {
+        if (s == null) {
+            return "";
+        }
+        return s.replaceAll("[\\s\\u3000]+", "")
+                .replace('\uff08', '(').replace('\uff09', ')')
+                .replace('\uff1a', ':').replace('\uff0c', ',');
+    }
+
+    // ---------------------------------------------------------------- docx
+
+    /** Download the official .docx and return its paragraphs as plain text. */
+    private static List<String> docxParagraphs(String bbbs) throws Exception {
+        byte[] zip = get(DOCX_URL + bbbs);
+        String xml = null;
+        try (ZipInputStream zin = new ZipInputStream(new ByteArrayInputStream(zip))) {
+            ZipEntry e;
+            while ((e = zin.getNextEntry()) != null) {
+                if ("word/document.xml".equals(e.getName())) {
+                    xml = new String(zin.readAllBytes(), StandardCharsets.UTF_8);
+                    break;
+                }
+            }
+        }
+        if (xml == null) {
+            throw new IllegalStateException("word/document.xml missing in docx: " + bbbs);
+        }
+        List<String> paras = new ArrayList<>();
+        Matcher p = Pattern.compile("<w:p[ >].*?</w:p>", Pattern.DOTALL).matcher(xml);
+        while (p.find()) {
+            StringBuilder sb = new StringBuilder();
+            Matcher t = Pattern.compile("<w:t[^>]*>(.*?)</w:t>", Pattern.DOTALL).matcher(p.group());
+            while (t.find()) {
+                sb.append(t.group(1));
+            }
+            String text = decodeEntities(sb.toString().replaceAll("<[^>]+>", ""))
+                    .replace('\u3000', ' ').strip();
+            if (!text.isEmpty()) {
+                paras.add(text);
+            }
+        }
+        return paras;
+    }
+
+    private static String decodeEntities(String s) {
+        String r = s.replace("&lt;", "<").replace("&gt;", ">")
+                .replace("&quot;", "\"").replace("&apos;", "'").replace("&amp;", "&");
+        Matcher em = Pattern.compile("&#(x?[0-9a-fA-F]+);").matcher(r);
+        StringBuilder b = new StringBuilder();
+        while (em.find()) {
+            String g = em.group(1);
+            int cp = (g.startsWith("x") || g.startsWith("X"))
+                    ? Integer.parseInt(g.substring(1), 16) : Integer.parseInt(g);
+            em.appendReplacement(b, Matcher.quoteReplacement(String.valueOf((char) cp)));
+        }
+        em.appendTail(b);
+        return b.toString();
+    }
+
+    // ---------------------------------------------------------------- parsing
+
+    private static final class Parsed {
+        List<Art> arts = new ArrayList<>();
+        List<String> appendix = new ArrayList<>();
+        List<String> warnings = new ArrayList<>();
+        int bianCount, zhangCount, jieCount;
+    }
+
+    /**
+     * Split paragraphs into articles.
+     * <p>
+     * A paragraph that starts with an article number opens a new article (cross references
+     * inside a paragraph never do - that is why the match is anchored); following paragraphs
+     * are appended to it. Chapter/section/bian headings update context. Table-of-contents
+     * entries repeat the same heading text, so only the last occurrence of each heading is
+     * treated as the real one. A trailing appendix is captured separately instead of being
+     * dropped.
+     */
+    private static Parsed parse(List<String> paras) {
+        // Headings may repeat as table-of-contents entries; only the last occurrence of each
+        // heading text is the real one (the body follows the TOC in these official files).
+        Map<String, Integer> lastOcc = new LinkedHashMap<>();
+        for (int i = 0; i < paras.size(); i++) {
+            String p = paras.get(i);
+            if (isHeading(p)) {
+                lastOcc.put(p, i);
+            }
+        }
+        Parsed out = new Parsed();
+        String bian = null, zhang = null, jie = null;
+        boolean inAppendix = false;
+        for (int i = 0; i < paras.size(); i++) {
+            String p = paras.get(i);
+            if (!inAppendix && P_APPENDIX.matcher(p).matches() && !P_ART.matcher(p).find()) {
+                inAppendix = true;
+            }
+            if (inAppendix) {
+                out.appendix.add(p);
+                continue;
+            }
+            if (P_TOC.matcher(p).matches()) {
+                continue;
+            }
+            if (isHeading(p)) {
+                if (!Integer.valueOf(i).equals(lastOcc.get(p))) {
+                    continue;                     // table-of-contents entry
+                }
+                if (P_BIAN.matcher(p).matches()) {
+                    bian = squash(p);
+                    zhang = null;
+                    jie = null;
+                    out.bianCount++;
+                } else if (P_ZHANG.matcher(p).matches()) {
+                    zhang = squash(p);
+                    jie = null;
+                    out.zhangCount++;
+                } else {
+                    jie = squash(p);
+                    out.jieCount++;
+                }
+                continue;                          // headings never join article text
+            }
+            Matcher ma = P_ART.matcher(p);
+            if (ma.find() && ma.start() == 0) {
+                out.arts.add(new Art(ma.group(), bian, zhang, jie));
+            }
+            if (!out.arts.isEmpty()) {
+                out.arts.get(out.arts.size() - 1).text.append(' ').append(p);
+            }
+        }
+        validate(out);
+        return out;
+    }
+
+    /** A paragraph that is a bian/zhang/jie heading (in the body or in a table of contents). */
+    private static boolean isHeading(String p) {
+        return P_BIAN.matcher(p).matches() || P_ZHANG.matcher(p).matches() || P_JIE.matcher(p).matches();
+    }
+
+    /** Continuity check: a silent numbering gap means the parse lost or merged something. */
+    private static void validate(Parsed p) {
+        Integer prev = null;
+        int max = 0;
+        for (Art a : p.arts) {
+            int n = cn2int(a.no);
+            max = Math.max(max, n);
+            if (prev != null && n != prev + 1 && n != prev) {
+                p.warnings.add(n < prev
+                        ? ("number went backwards at " + a.no)
+                        : ("gap after " + prev + " -> " + a.no));
+            }
+            prev = n;
+        }
+        java.util.Set<Integer> seen = new java.util.HashSet<>();
+        for (Art a : p.arts) {
+            if (!seen.add(cn2int(a.no))) {
+                p.warnings.add("duplicate number " + a.no);
+            }
+        }
+        if (max > 0) {
+            java.util.Set<Integer> all = new java.util.HashSet<>();
+            for (Art a : p.arts) {
+                all.add(cn2int(a.no));
+            }
+            for (int i = 1; i <= max; i++) {
+                if (!all.contains(i)) {
+                    p.warnings.add("missing number " + i + " (of " + max + ")");
+                    break;
+                }
+            }
+        }
+        for (Art a : p.arts) {
+            if (a.bian == null && a.zhang == null && p.zhangCount == 0 && p.bianCount == 0) {
+                break;
+            }
+            if (a.zhang == null && a.bian == null) {
+                p.warnings.add("article " + a.no + " has no chapter context");
+                break;
+            }
+        }
+    }
+
+    private static int cn2int(String token) {
+        String t = token;
+        int cut = t.indexOf('\u6761');
+        if (cut > 0) {
+            t = t.substring(0, cut);
+        }
+        if (t.startsWith("\u7b2c")) {
+            t = t.substring(1);
+        }
+        if (t.matches("\\d+")) {
+            return Integer.parseInt(t);
+        }
+        String digits = "\u96f6\u4e00\u4e8c\u4e09\u56db\u4e94\u516d\u4e03\u516b\u4e5d";
+        int num = 0, res = 0;
+        for (char c : t.toCharArray()) {
+            int d = digits.indexOf(c);
+            if (d >= 0) {
+                num = d;
+            } else if (c == '\u5341') {
+                res += (num == 0 ? 1 : num) * 10;
+                num = 0;
+            } else if (c == '\u767e') {
+                res += (num == 0 ? 1 : num) * 100;
+                num = 0;
+            } else if (c == '\u5343') {
+                res += (num == 0 ? 1 : num) * 1000;
+                num = 0;
+            } else if (c == '\u4e24') {
+                num = 2;
+            }
+        }
+        return res + num;
+    }
+
+    // ---------------------------------------------------------------- SQL emit
+
+    private static String emit(StringBuilder sql, LawSpec s, Parsed p, String version) {
+        long id = s.idStart();
+        sql.append("-- ").append(s.lawName()).append(" | ").append(version)
+                .append(" | ").append(p.arts.size()).append(" articles");
+        if (!p.appendix.isEmpty()) {
+            sql.append(" + appendix");
+        }
+        sql.append('\n');
+        for (Art a : p.arts) {
+            String body = a.text.toString().strip();
+            Matcher m = P_ART.matcher(body);
+            if (m.find() && m.start() == 0) {
+                body = body.substring(m.end()).strip();
+            }
+            String chap = joinNonBlank(a.bian, a.zhang);
+            insert(sql, id++, "《" + s.lawName() + "》", a.no, s.category(), s.docType(),
+                    null, version, chap, a.jie, body);
+        }
+        if (!p.appendix.isEmpty()) {
+            String marker = p.appendix.get(0).replaceAll("[:\uff1a]$", "").strip();
+            String title = p.appendix.size() > 1 ? p.appendix.get(1) : null;
+            String body = String.join(" ", p.appendix.subList(Math.min(2, p.appendix.size()), p.appendix.size()));
+            if (body.isBlank()) {
+                body = String.join(" ", p.appendix);
+            }
+            insert(sql, id, "《" + s.lawName() + "》", marker, s.category(), s.docType(),
+                    title, version, null, null, body);
+        }
+        sql.append('\n');
+        return null;
+    }
+
+    private static void insert(StringBuilder sql, long id, String law, String no, String category,
+                               String docType, String title, String version, String chapter,
+                               String section, String content) {
+        sql.append("INSERT INTO law_article (id, law_name, article_no, category, doc_type, title,")
+                .append(" version_info, chapter_info, section_info, content, deleted) VALUES (")
+                .append(id).append(", ").append(q(law)).append(", ").append(q(no)).append(", ")
+                .append(q(category)).append(", ").append(q(docType)).append(", ").append(q(title))
+                .append(", ").append(q(version)).append(", ").append(q(chapter)).append(", ")
+                .append(q(section)).append(", ").append(q(content)).append(", 0)")
+                .append(" ON CONFLICT (id) DO UPDATE SET law_name = EXCLUDED.law_name,")
+                .append(" article_no = EXCLUDED.article_no, category = EXCLUDED.category,")
+                .append(" doc_type = EXCLUDED.doc_type, title = EXCLUDED.title,")
+                .append(" version_info = EXCLUDED.version_info, chapter_info = EXCLUDED.chapter_info,")
+                .append(" section_info = EXCLUDED.section_info, content = EXCLUDED.content,")
+                .append(" deleted = EXCLUDED.deleted;\n");
+    }
+
+    /** Collapse every whitespace run in a heading into a single space. */
+    private static String squash(String s) {
+        return s.replaceAll("[\\s\\u3000]+", " ").strip();
+    }
+
+    private static String joinNonBlank(String a, String b) {
+        StringBuilder sb = new StringBuilder();
+        if (a != null && !a.isBlank()) {
+            sb.append(a);
+        }
+        if (b != null && !b.isBlank()) {
+            if (sb.length() > 0) {
+                sb.append(' ');
+            }
+            sb.append(b);
+        }
+        return sb.length() == 0 ? null : sb.toString();
+    }
+
+    private static String q(String s) {
+        return s == null ? "NULL" : "'" + s.replace("'", "''") + "'";
+    }
+
+    // ---------------------------------------------------------------- http bits
+
+    private static String post(String url, String body) throws Exception {
+        HttpRequest req = HttpRequest.newBuilder(URI.create(url))
+                .header("Content-Type", "application/json")
+                .header("Accept", "application/json, text/plain, */*")
+                .header("User-Agent", UA)
+                .header("Referer", "https://flk.npc.gov.cn/")
+                .header("Origin", "https://flk.npc.gov.cn")
+                .POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8))
+                .timeout(Duration.ofSeconds(60))
+                .build();
+        return HTTP.send(req, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8)).body();
+    }
+
+    /** Visit the site once so the WAF hands out its session cookie before we call the API. */
+    private static void warmUp() throws Exception {
+        try {
+            HttpRequest req = HttpRequest.newBuilder(URI.create(HOME_URL))
+                    .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+                    .header("User-Agent", UA)
+                    .timeout(Duration.ofSeconds(30))
+                    .GET()
+                    .build();
+            int code = HTTP.send(req, HttpResponse.BodyHandlers.discarding()).statusCode();
+            System.out.println("warm-up: HTTP " + code);
+            sleep(600);
+        } catch (Exception e) {
+            System.out.println("warm-up failed (continuing): " + e.getMessage());
+        }
+    }
+
+    private static byte[] get(String url) throws Exception {
+        HttpRequest req = HttpRequest.newBuilder(URI.create(url))
+                .header("User-Agent", UA)
+                .header("Referer", "https://flk.npc.gov.cn/")
+                .timeout(Duration.ofSeconds(90))
+                .GET()
+                .build();
+        HttpResponse<byte[]> r = HTTP.send(req, HttpResponse.BodyHandlers.ofByteArray());
+        if (r.statusCode() != 200 || r.body().length < 4 || r.body()[0] != 'P' || r.body()[1] != 'K') {
+            throw new IllegalStateException("download failed: HTTP " + r.statusCode()
+                    + " (expected a .docx / zip container)");
+        }
+        return r.body();
+    }
+
+    private static String field(String json, String name) {
+        if (json == null) {
+            return null;
+        }
+        Matcher m = Pattern.compile("\"" + name + "\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\"").matcher(json);
+        if (!m.find()) {
+            return null;
+        }
+        return m.group(1).replace("\\\"", "\"").replace("\\/", "/").replace("\\\\", "\\")
+                .replace("\\n", " ").replace("\\r", " ").replace("\\t", " ");
+    }
+
+    private static String num(String json, String name) {
+        Matcher m = Pattern.compile("\"" + name + "\"\\s*:\\s*(-?\\d+)").matcher(json);
+        return m.find() ? m.group(1) : "0";
+    }
+
+    private static void sleep(long ms) {
+        try {
+            Thread.sleep(ms);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+}

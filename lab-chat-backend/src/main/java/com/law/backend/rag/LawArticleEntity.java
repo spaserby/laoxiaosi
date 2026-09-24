@@ -35,6 +35,9 @@ public class LawArticleEntity {
     /** 版本信息 */
     private String versionInfo;
 
+    /** 效力位阶：宪法/法律/行政法规/司法解释/监察法规（与业务领域 category 正交） */
+    private String docType;
+
     /** 章属 */
     private String chapterInfo;
 

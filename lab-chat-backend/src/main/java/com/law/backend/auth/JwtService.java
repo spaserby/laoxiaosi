@@ -28,9 +28,35 @@ public class JwtService {
     private final SecretKey key;
     private final long expireMillis;
 
-    public JwtService(AuthProperties properties) {
-        this.key = Keys.hmacShaKeyFor(properties.getJwtSecret().getBytes(StandardCharsets.UTF_8));
+    /** 仓库内历史上出现过的默认密钥：等同于"未配置"，绝不允许用于生产 */
+    private static final String DEV_DEFAULT = "change-me-in-production-legal-assistant-dev-secret";
+
+    /**
+     * 密钥策略（P0 安全整改）：
+     * <ul>
+     *   <li>未配置 / 仍是仓库默认值：开发态（无 prod profile）生成本进程随机密钥——仓库里不再存在
+     *       任何可被用来伪造 token 的固定密钥；代价是重启后旧 token 失效（开发可接受）</li>
+     *   <li>prod profile：直接抛异常拒绝启动——生产缺强随机密钥属于部署事故，宁可起不来</li>
+     * </ul>
+     */
+    public JwtService(AuthProperties properties, org.springframework.core.env.Environment environment) {
+        String secret = properties.getJwtSecret();
+        if (secret == null || secret.isBlank() || DEV_DEFAULT.equals(secret)) {
+            if (java.util.Arrays.asList(environment.getActiveProfiles()).contains("prod")) {
+                throw new IllegalStateException(
+                        "生产环境必须注入强随机 JWT_SECRET（当前未配置或仍为仓库默认值），拒绝启动");
+            }
+            secret = randomSecret();
+            log.warn("未配置 JWT_SECRET：已生成本进程随机密钥（开发可用，重启后旧 token 失效；生产请注入 JWT_SECRET）");
+        }
+        this.key = Keys.hmacShaKeyFor(secret.getBytes(StandardCharsets.UTF_8));
         this.expireMillis = properties.getJwtExpireHours() * 3600_000L;
+    }
+
+    private static String randomSecret() {
+        byte[] bytes = new byte[48];
+        new java.security.SecureRandom().nextBytes(bytes);
+        return java.util.Base64.getEncoder().encodeToString(bytes);
     }
 
     /** 签发 token：subject=userId，claims 带 username/role */

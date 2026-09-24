@@ -19,6 +19,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
 /**
  * 知识库导入管道（PG 底账 + MD5 指纹增量同步）
@@ -79,6 +80,13 @@ public class KnowledgeImportService {
     }
 
     /**
+     * 同步清单（管理端勾选界面用）：每个法名一行，含条数与已向量化条数。
+     */
+    public List<Map<String, Object>> syncScope() {
+        return lawArticleMapper.listSyncScope();
+    }
+
+    /**
      * 应用启动完成后自动执行增量同步（受 import-on-startup 开关控制）
      */
     @EventListener(ApplicationReadyEvent.class)
@@ -91,15 +99,29 @@ public class KnowledgeImportService {
     }
 
     /**
-     * 增量同步管道：PG 底账 → 向量库（新增/变更/删除三态）
+     * 增量同步管道（全量）：PG 底账 → 向量库（新增/变更/删除三态）
      *
      * @return null = 成功；非 null = 错误信息
      */
     public String syncLedgerToVector() {
+        return syncLedgerToVector(null);
+    }
+
+    /**
+     * 增量同步管道（可按法名勾选作用域）：PG 底账 → 向量库（新增/变更/删除三态）
+     *
+     * @param lawNames 只同步这些法律；null/空 = 全量
+     * @return null = 成功；非 null = 错误信息
+     */
+    public String syncLedgerToVector(List<String> lawNames) {
+        boolean scoped = lawNames != null && !lawNames.isEmpty();
         try {
-            // 1. 从 PG 底账读取全部有效条文（deleted=0）
-            List<LawArticleEntity> articles = lawArticleMapper.findAllActive();
-            log.info("PG 底账扫描完成, 有效条文数={}", articles.size());
+            // 1. 从 PG 底账读取有效条文（deleted=0）；勾选同步时限定在所选法名内
+            List<LawArticleEntity> articles = scoped
+                    ? lawArticleMapper.findAllActiveByLawNames(lawNames)
+                    : lawArticleMapper.findAllActive();
+            log.info("PG 底账扫描完成, 有效条文数={}, 作用域={}", articles.size(),
+                    scoped ? lawNames.size() + " 部法律" : "全量");
 
             // 2. 读取指纹底账（PG rag_ledger：多实例共享 + 持久化，Redis flush 不再导致全量重嵌）
             Map<String, String> oldHashes = new HashMap<>();
@@ -128,6 +150,12 @@ public class KnowledgeImportService {
                 }
             }
             Set<String> toDelete = new HashSet<>(oldHashes.keySet());
+            if (scoped) {
+                // ★ 删除回收必须限定在同一作用域内：否则未勾选法条的指纹不在 newHashes 里，
+                //   会被判成"底账已删"而整体回收掉向量（勾选同步最危险的坑）
+                toDelete.retainAll(lawArticleMapper.findIdsByLawNames(lawNames)
+                        .stream().map(String::valueOf).collect(Collectors.toSet()));
+            }
             toDelete.removeAll(newHashes.keySet());   // 底账有、PG 已删/逻辑删 → 回收向量
 
             // 4. 执行同步：先回收删除的，再分批写入新增/变更的

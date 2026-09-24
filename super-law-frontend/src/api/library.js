@@ -9,3 +9,7 @@ export const pageLawArticles = (params) =>
 // 分类计数 [{category, count}]
 export const listCategories = () =>
   http.get('/law-article/categories').then(r => r.data.data)
+
+// 单条法条详情（引用卡按需展开正文/章节属：SSE 引用载荷不带正文时据此补齐）
+export const fetchArticleDetail = (id) =>
+  http.get('/law-article/detail', { params: { id } }).then(r => r.data.data)

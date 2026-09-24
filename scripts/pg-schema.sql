@@ -11,7 +11,8 @@ CREATE TABLE IF NOT EXISTS law_article (
   id           BIGINT PRIMARY KEY,
   law_name     VARCHAR(255) NOT NULL,
   article_no   VARCHAR(64)  NOT NULL,
-  category     VARCHAR(64),
+  category     VARCHAR(64),                   -- 业务领域：劳动/民事/商事/刑事/行政/经济/程序/宪法/环境/社会
+  doc_type     VARCHAR(32),                   -- 效力位阶：宪法/法律/行政法规/司法解释/监察法规
   title        VARCHAR(255),
   version_info VARCHAR(128),
   chapter_info VARCHAR(128),
@@ -25,6 +26,7 @@ CREATE TABLE IF NOT EXISTS law_article (
 CREATE INDEX IF NOT EXISTS idx_law_content_trgm ON law_article USING gin (content gin_trgm_ops);
 CREATE INDEX IF NOT EXISTS idx_law_name_trgm ON law_article USING gin (law_name gin_trgm_ops);
 CREATE INDEX IF NOT EXISTS idx_law_deleted ON law_article(deleted);
+CREATE INDEX IF NOT EXISTS idx_law_doc_type ON law_article(doc_type);
 
 -- 用户表（MySQL 表名 user 是 PG 保留字，迁 PG 更名 app_user）
 CREATE TABLE IF NOT EXISTS app_user (
@@ -39,13 +41,19 @@ CREATE TABLE IF NOT EXISTS app_user (
 );
 
 -- 会话索引（取代 Redis Hash chat:session:index；与消息同库，悬空问题根除）
+-- 会话索引（取代 Redis Hash chat:session:index；与消息同库，悬空问题根除）
+-- owner_key：会话归属，列表/读取/删除/停止生成按它鉴权（P0 安全整改）
+--   登录 u:{userId} / 匿名 g:{guestKey}（前端 localStore 随机串，X-Guest-Key 头）
+--   / legacy = 整改前的历史数据，任何调用方都读不到
 CREATE TABLE IF NOT EXISTS chat_session (
   session_id VARCHAR(64) PRIMARY KEY,
   title      VARCHAR(64) NOT NULL,
   created_at BIGINT NOT NULL,
-  updated_at BIGINT NOT NULL
+  updated_at BIGINT NOT NULL,
+  owner_key  VARCHAR(80)
 );
 CREATE INDEX IF NOT EXISTS idx_session_updated ON chat_session(updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_session_owner ON chat_session(owner_key, updated_at DESC);
 
 -- 会话消息（取代 Redis RList chat:memory:{sid}；id 自增即时序）
 CREATE TABLE IF NOT EXISTS chat_message (
