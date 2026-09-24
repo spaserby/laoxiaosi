@@ -1,0 +1,183 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <!--
+        ============================================================
+        劳小司 · 智能法律助手（Legal Assistant）父 POM
+        ============================================================
+        项目定位：以学习 Spring AI 技术栈为核心的渐进式项目（按学习阶段演进，详见 README）
+        技术栈：JDK 17 + Spring Boot 3.5.x + Spring AI 1.1.x
+                PostgreSQL 18 + pgvector（底账/向量/会话记忆同库）+ Redis（缓存/锁/配额）
+        模块划分：
+            backend  唯一业务模块：
+                           SSE 流式+停止生成 / 会话记忆 / Function Calling /
+                           RAG（PG 底账 + 两阶段混合检索管线）/ 多路线模型三级级联路由 /
+                            联网搜索（webSearch 工具直调联网子模型）/ 安全与质量门
+        ============================================================
+    -->
+    <groupId>com.law.assistant</groupId>
+    <artifactId>legal-assistant</artifactId>
+    <version>1.0.0-SNAPSHOT</version>
+    <packaging>pom</packaging>
+    <name>legal-assistant</name>
+    <description>劳小司 - 智能法律助手（Spring AI 学习项目，单模块 lab-chat-backend）</description>
+
+    <!-- 子模块声明：仅保留 backend 单模块 -->
+    <modules>
+        <module>lab-chat-backend</module>
+    </modules>
+
+    <!-- 统一版本号管理：所有依赖版本集中在此声明，子模块引用不写 version -->
+    <properties>
+        <java.version>17</java.version>
+        <maven.compiler.source>17</maven.compiler.source>
+        <maven.compiler.target>17</maven.compiler.target>
+        <!-- 编译时保留方法参数名，Spring Boot 3 的 @RequestParam 等注解依赖此参数 -->
+        <maven.compiler.parameters>true</maven.compiler.parameters>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+
+        <!-- Spring 生态（2026-05 升级：Spring AI 1.1.7 + Boot 3.5.11，对应 JDK 17 + Servlet 栈不变）
+             注：Spring AI 2.0 需 Boot 4 + Java 21，暂不升级 -->
+        <spring-boot.version>3.5.11</spring-boot.version>
+        <spring-ai.version>1.1.7</spring-ai.version>
+
+        <!-- 持久化 -->
+        <!-- Redisson 3.50.x 适配 Spring Boot 3.5（内置 redisson-spring-data-35） -->
+        <redisson.version>3.50.0</redisson.version>
+
+        <!-- 工具 -->
+        <lombok.version>1.18.30</lombok.version>
+    </properties>
+
+    <!-- 依赖版本声明：dependencyManagement 只声明版本，不实际引入 -->
+    <dependencyManagement>
+        <dependencies>
+            <!-- Spring Boot BOM：统一管理 Spring Boot 全家桶版本 -->
+            <dependency>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-dependencies</artifactId>
+                <version>${spring-boot.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+
+            <!-- Spring AI BOM：统一管理 Spring AI 核心模块版本（spring-ai-model/spring-ai-client-chat 等） -->
+            <dependency>
+                <groupId>org.springframework.ai</groupId>
+                <artifactId>spring-ai-bom</artifactId>
+                <version>${spring-ai.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+
+            <!-- Redisson：Redis 客户端（缓存/分布式锁/配额） -->
+            <dependency>
+                <groupId>org.redisson</groupId>
+                <artifactId>redisson-spring-boot-starter</artifactId>
+                <version>${redisson.version}</version>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
+    <!-- 所有子模块自动拥有的公共依赖 -->
+    <dependencies>
+        <!-- day18：用户体系——Spring Security（BCrypt/RBAC/过滤器链）+ JWT 无状态认证 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-security</artifactId>
+        </dependency>
+        <!-- day21→day22 修正：阿里云个人版短信认证服务（dypnsapi：验证码由阿里云生成+核验，
+             SendSmsVerifyCode/CheckSmsVerifyCode；非通用短信 dysmsapi） -->
+        <dependency>
+            <groupId>com.aliyun</groupId>
+            <artifactId>dypnsapi20170525</artifactId>
+            <version>2.0.0</version>
+        </dependency>
+        <!-- day22：会话附件解析——PDF（PDFBox）/ DOCX（POI）；txt/md 直读 -->
+        <dependency>
+            <groupId>org.apache.pdfbox</groupId>
+            <artifactId>pdfbox</artifactId>
+            <version>3.0.3</version>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.poi</groupId>
+            <artifactId>poi-ooxml</artifactId>
+            <version>5.2.5</version>
+        </dependency>
+        <dependency>
+            <groupId>io.jsonwebtoken</groupId>
+            <artifactId>jjwt-api</artifactId>
+            <version>0.12.6</version>
+        </dependency>
+        <dependency>
+            <groupId>io.jsonwebtoken</groupId>
+            <artifactId>jjwt-impl</artifactId>
+            <version>0.12.6</version>
+            <scope>runtime</scope>
+        </dependency>
+        <dependency>
+            <groupId>io.jsonwebtoken</groupId>
+            <artifactId>jjwt-jackson</artifactId>
+            <version>0.12.6</version>
+            <scope>runtime</scope>
+        </dependency>
+
+        <!-- Lombok：编译期注解处理，减少样板代码 -->
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+            <version>${lombok.version}</version>
+            <scope>provided</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <pluginManagement>
+            <plugins>
+                <!--
+                    锁定 maven-compiler-plugin 版本：Maven 3.6.x 默认绑定 3.1，
+                    不支持 -parameters（maven.compiler.parameters），会导致
+                    Spring Boot 3 的 @RequestParam 拿不到参数名报 500。
+                -->
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-compiler-plugin</artifactId>
+                    <version>3.11.0</version>
+                    <configuration>
+                        <parameters>true</parameters>
+                    </configuration>
+                </plugin>
+                <plugin>
+                    <groupId>org.springframework.boot</groupId>
+                    <artifactId>spring-boot-maven-plugin</artifactId>
+                    <version>${spring-boot.version}</version>
+                </plugin>
+                <!--
+                    day11：锁定 surefire 3.x。spring-boot-dependencies BOM 只管依赖不管插件，
+                    不锁定时 Maven 用超级 POM 默认的 2.12.4（不认 JUnit 5，静默报 Tests run: 0）。
+                -->
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-surefire-plugin</artifactId>
+                    <version>3.2.5</version>
+                </plugin>
+            </plugins>
+        </pluginManagement>
+    </build>
+
+    <!-- Spring AI 部分组件可能需要里程碑仓库，保留以防依赖解析失败 -->
+    <repositories>
+        <repository>
+            <id>spring-milestones</id>
+            <name>Spring Milestones</name>
+            <url>https://repo.spring.io/milestone</url>
+            <snapshots>
+                <enabled>false</enabled>
+            </snapshots>
+        </repository>
+    </repositories>
+
+</project>

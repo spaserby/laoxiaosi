@@ -1,0 +1,36 @@
+# 劳小司 nginx 站点模板（nginx 官方镜像 envsubst 渲染 ${API_UPSTREAM}）
+server {
+    listen 80;
+    server_name _;
+    root /usr/share/nginx/html;
+    index index.html;
+
+    # 附件上传单文件 100MB（对标 DeepSeek）+ multipart 边界余量
+    client_max_body_size 110m;
+
+    # ============ API 反代白名单（部署契约：新增后端前缀必须同步本正则） ============
+    # 当前前缀：chat session law-article tools auth admin stats
+    # 漏配症状：POST 404/415；GET 被 SPA fallback 以 200 返回 index.html → 前端把 HTML 当 JSON 解析（NaN/undefined 静默上屏）
+    location ~ ^/(chat|session|law-article|tools|auth|admin|stats)/ {
+        proxy_pass ${API_UPSTREAM};
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        # SSE 三件套：关缓冲 + 关缓存 + 长超时——缺一则流式回答在生产变整包下发
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
+    }
+
+    # 静态资源长缓存（头像/构建产物带哈希）
+    location /avatars/ { expires 30d; add_header Cache-Control "public"; }
+    location /assets/  { expires 30d; add_header Cache-Control "public,immutable"; }
+
+    # SPA fallback：非 API 路径一律回 index.html（vue-router history 模式）
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+}

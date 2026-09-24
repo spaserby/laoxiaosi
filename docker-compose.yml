@@ -1,0 +1,58 @@
+# ============================================================
+# 劳小司 · 本地开发基础设施（PG + pgvector + Redis）
+# 启动：docker compose up -d      停止：docker compose down
+# 说明：
+#   - postgres：唯一持久层（底账/向量/会话记忆），首次启动自动执行 db/init.sql
+#     （建表 + 468 条劳动法法条，幂等；数据卷已存在时会跳过）
+#   - redis：缓存/分布式锁/配额计数（易失态，可随时清空）
+#   - 本机已有 PG / Redis 时跳过本文件，手动初始化：psql -U postgres -d lab_legal_kb -f db/init.sql
+#   - 生产服务器编排（含后端/前端/nginx）见 deploy/docker-compose.yml
+# ============================================================
+services:
+  postgres:
+    image: pgvector/pgvector:pg17
+    container_name: lab-pg
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${PG_DB:-lab_legal_kb}
+      POSTGRES_USER: ${PG_USER:-postgres}
+      POSTGRES_PASSWORD: ${PG_PASSWORD:-postgres}
+      TZ: Asia/Shanghai
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_dev_data:/var/lib/postgresql/data
+      # 首次启动（空数据卷）自动执行；init.sql 幂等，也可事后手动重跑
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${PG_USER:-postgres} -d ${PG_DB:-lab_legal_kb}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: lab-redis
+    restart: unless-stopped
+    # noeviction：内存满拒绝写入而非驱逐（配额/锁被静默驱逐极难排查）
+    # appendonly：重启不丢缓存态（否则会话全断）
+    command: >
+      redis-server
+      --requirepass ${REDIS_PASSWORD:-local-dev-redis}
+      --maxmemory 256mb
+      --maxmemory-policy noeviction
+      --appendonly yes
+      --appendfsync everysec
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_dev_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-local-dev-redis}", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  pg_dev_data:
+  redis_dev_data:

@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Chat Demo - 法律助手演示</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: "PingFang SC", "Microsoft YaHei", sans-serif; background: #f0f2f5; height: 100vh; display: flex; flex-direction: column; }
+    header { background: #fff; border-bottom: 1px solid #e4e7ed; padding: 14px 24px; display: flex; align-items: center; justify-content: space-between; }
+    header .title { font-size: 17px; font-weight: 600; }
+    header .hint { font-size: 12px; color: #909399; }
+    #message-list { flex: 1; overflow-y: auto; padding: 20px; }
+    .msg-wrap { max-width: 800px; margin: 0 auto; }
+    .msg { display: flex; margin-bottom: 20px; }
+    .avatar { width: 36px; height: 36px; border-radius: 50%; display: flex; align-items: center; justify-content: center; color: #fff; font-size: 14px; margin-right: 12px; flex-shrink: 0; }
+    .msg.user .avatar { background: #409eff; }
+    .msg.assistant .avatar { background: #67c23a; }
+    .msg-body { flex: 1; min-width: 0; }
+    .msg-role { font-size: 12px; color: #909399; margin-bottom: 4px; }
+    .msg-text { font-size: 14px; line-height: 1.7; word-break: break-word; white-space: pre-wrap; color: #303133; }
+    .typing-cursor { display: inline-block; animation: blink 1s infinite; color: #409eff; }
+    @keyframes blink { 0%, 50% { opacity: 1; } 51%, 100% { opacity: 0; } }
+    footer { background: #fff; border-top: 1px solid #e4e7ed; padding: 14px 24px; }
+    .input-area { max-width: 800px; margin: 0 auto; }
+    #input { width: 100%; border: 1px solid #dcdfe6; border-radius: 6px; padding: 10px 12px; font-size: 14px; resize: none; outline: none; font-family: inherit; }
+    #input:focus { border-color: #409eff; }
+    #input:disabled { background: #f5f7fa; }
+    .actions { display: flex; justify-content: flex-end; margin-top: 8px; }
+    button { border: none; border-radius: 6px; padding: 8px 20px; font-size: 14px; cursor: pointer; }
+    #send-btn { background: #409eff; color: #fff; }
+    #send-btn:disabled { background: #a0cfff; cursor: not-allowed; }
+    #stop-btn { background: #f56c6c; color: #fff; margin-left: 10px; }
+    #stop-btn:disabled { background: #fab6b6; cursor: not-allowed; }
+    .empty-tip { text-align: center; color: #909399; margin-top: 80px; font-size: 14px; }
+  </style>
+</head>
+<body>
+<header>
+  <div class="title">Chat Demo（SSE 流式 + 停止生成 + 会话记忆 + 工具调用）</div>
+  <div class="hint">会话 ID：<span id="session-id"></span></div>
+</header>
+
+<div id="message-list">
+  <div class="msg-wrap" id="msg-wrap">
+    <div class="empty-tip" id="empty-tip">输入消息开始对话，试试：现在几点了 / 帮我算一下 12*5+8 / 工作3年半月薪8000被裁员能拿多少补偿</div>
+  </div>
+</div>
+
+<footer>
+  <div class="input-area">
+    <textarea id="input" rows="2" placeholder="输入消息，Enter 发送，Shift+Enter 换行"></textarea>
+    <div class="actions">
+      <button id="send-btn">发送</button>
+      <button id="stop-btn">停止发送</button>
+    </div>
+  </div>
+</footer>
+
+<script>
+  // 会话 ID：前端生成，后端按 sessionId 隔离 Redis 记忆
+  const sessionId = Date.now().toString(36) + Math.random().toString(36).slice(2, 8)
+  document.getElementById('session-id').textContent = sessionId
+
+  const msgWrap = document.getElementById('msg-wrap')
+  const messageList = document.getElementById('message-list')
+  const input = document.getElementById('input')
+  const sendBtn = document.getElementById('send-btn')
+  const stopBtn = document.getElementById('stop-btn')
+
+  let isGenerating = false
+  let eventSource = null
+  let currentTextEl = null
+
+  /** 添加一条消息，返回文本容器 */
+  function addMessage(role) {
+    const emptyTip = document.getElementById('empty-tip')
+    if (emptyTip) emptyTip.remove()
+
+    const msg = document.createElement('div')
+    msg.className = 'msg ' + role
+    const avatar = document.createElement('div')
+    avatar.className = 'avatar'
+    avatar.textContent = role === 'user' ? '我' : 'AI'
+    const body = document.createElement('div')
+    body.className = 'msg-body'
+    const roleEl = document.createElement('div')
+    roleEl.className = 'msg-role'
+    roleEl.textContent = role === 'user' ? '我' : '助手'
+    const textEl = document.createElement('div')
+    textEl.className = 'msg-text'
+    body.appendChild(roleEl)
+    body.appendChild(textEl)
+    msg.appendChild(avatar)
+    msg.appendChild(body)
+    msgWrap.appendChild(msg)
+    scrollToBottom()
+    return textEl
+  }
+
+  function scrollToBottom() {
+    messageList.scrollTop = messageList.scrollHeight
+  }
+
+  /** 切换生成中/空闲状态的 UI */
+  function setGenerating(generating) {
+    isGenerating = generating
+    input.disabled = generating
+    sendBtn.disabled = generating || !input.value.trim()
+    stopBtn.disabled = !generating
+    if (currentTextEl) {
+      const cursor = currentTextEl.querySelector('.typing-cursor')
+      if (!generating && cursor) cursor.remove()
+    }
+  }
+
+  /** 发送消息：建立 SSE 连接接收 token 流 */
+  function sendMessage() {
+    const text = input.value.trim()
+    if (!text || isGenerating) return
+
+    addMessage('user').textContent = text
+    input.value = ''
+
+    // 空的助手消息 + 打字光标
+    currentTextEl = addMessage('assistant')
+    const cursor = document.createElement('span')
+    cursor.className = 'typing-cursor'
+    cursor.textContent = '▋'
+    currentTextEl.appendChild(cursor)
+    setGenerating(true)
+
+    const params = new URLSearchParams({ sessionId, userMessage: text })
+    eventSource = new EventSource('/chat/stream?' + params.toString())
+
+    // token 事件：逐片段追加
+    eventSource.addEventListener('token', (e) => {
+      currentTextEl.insertBefore(document.createTextNode(e.data), cursor)
+      scrollToBottom()
+    })
+
+    // done 事件：生成完成
+    eventSource.addEventListener('done', () => {
+      eventSource.close()
+      setGenerating(false)
+    })
+
+    // 业务 error 事件（后端下发的 error 事件）
+    eventSource.addEventListener('error', (e) => {
+      if (e.data) {
+        currentTextEl.textContent = e.data
+      }
+      eventSource.close()
+      setGenerating(false)
+    })
+
+    // EventSource 原生错误（网络中断等）
+    eventSource.onerror = () => {
+      if (eventSource.readyState === EventSource.CLOSED) return
+      eventSource.close()
+      if (isGenerating) {
+        currentTextEl.textContent += '\n[连接已断开]'
+        setGenerating(false)
+      }
+    }
+  }
+
+  /**
+   * 停止发送（双重保险）：
+   * 1. 关闭前端 EventSource（断开 SSE 连接，触发后端框架取消订阅）
+   * 2. 调用后端 /chat/stop 主动触发停止信号，cancel 传播到大模型，真正中断生成
+   */
+  async function stopGenerate() {
+    if (eventSource) {
+      eventSource.close()
+      eventSource = null
+    }
+    try {
+      await fetch('/chat/stop?sessionId=' + encodeURIComponent(sessionId), { method: 'POST' })
+    } catch (e) {
+      console.error('停止发送请求失败', e)
+    }
+    setGenerating(false)
+  }
+
+  sendBtn.addEventListener('click', sendMessage)
+  stopBtn.addEventListener('click', stopGenerate)
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault()
+      sendMessage()
+    }
+  })
+  input.addEventListener('input', () => {
+    sendBtn.disabled = !input.value.trim() || isGenerating
+  })
+</script>
+</body>
+</html>

@@ -1,0 +1,12 @@
+# 前端镜像：node 构建 SPA → nginx 官方镜像（自带 /etc/nginx/templates 环境变量替换）
+FROM node:20-alpine AS build
+WORKDIR /src
+COPY super-law-frontend/package*.json ./
+RUN npm ci
+COPY super-law-frontend/ ./
+RUN npm run build
+
+FROM nginx:1.27-alpine
+COPY --from=build /src/dist /usr/share/nginx/html
+# nginx 官方镜像启动时对本文件做 envsubst（${API_UPSTREAM} 由 compose environment 注入）
+COPY deploy/nginx.conf.template /etc/nginx/templates/default.conf.template
