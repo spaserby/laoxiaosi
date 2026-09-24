@@ -13,7 +13,7 @@ import * as authApi from '../api/auth'
 export const useUserStore = defineStore('user', () => {
   const token = ref(localStorage.getItem('sl_token') || '')
   const user = ref(null)
-  const quota = ref(null)   // {tier,dailyLimit,used,remaining,resetAtEpochMs}
+  const quota = ref(null)   // {tier,limit,period,used,remaining,resetAtEpochMs}（period: daily|monthly）
 
   /** 拉取配额状态（静默失败，不阻断 UI） */
   async function loadQuota() {

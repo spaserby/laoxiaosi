@@ -134,13 +134,16 @@ const roleLabel = computed(() => {
 })
 
 // 账户卡副标题含剩余配额（透明展示）
+// period 由后端给（daily/monthly）：普通用户与律师是月额度，文案必须跟着变，
+// 否则"今日剩余"会让人以为是每天重置
 const accountSub = computed(() => {
   const q = userStore.quota
+  const scope = q && q.period === 'monthly' ? '本月' : '今日'
   if (!userStore.user) {
-    return q && q.remaining >= 0 ? `今日剩余 ${q.remaining} 次 · 登录解锁更多` : '游客咨询次数有限 · 登录解锁更多'
+    return q && q.remaining >= 0 ? `${scope}剩余 ${q.remaining} 次 · 登录解锁更多` : '游客咨询次数有限 · 登录解锁更多'
   }
   if (!q) return roleLabel.value
-  return q.dailyLimit < 0 ? `${roleLabel.value} · 不限额度` : `${roleLabel.value} · 今日剩余 ${q.remaining} 次`
+  return q.limit < 0 ? `${roleLabel.value} · 不限额度` : `${roleLabel.value} · ${scope}剩余 ${q.remaining} 次`
 })
 
 /* ---------- 设置对话框 ---------- */
