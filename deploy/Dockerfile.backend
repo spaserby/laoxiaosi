@@ -7,9 +7,13 @@ COPY deploy/maven-settings.xml /root/.m2/settings.xml
 # 先拷 pom 拉依赖（利用层缓存：依赖不变则不重下）
 COPY pom.xml .
 COPY lab-chat-backend/pom.xml lab-chat-backend/
-RUN mvn -q -B -pl lab-chat-backend -am dependency:go-offline || true
+# 预算依赖只为加速后续层，不能让它拖住整个发布：此步曾无超时挂死（Maven 下载无响应，
+# 5 分钟无输出、docker 构建整体卡住）。这里用 timeout 封顶，超时即跳过——
+# 下一步 package 会按需下载，最坏只是慢一点，不会挂死。
+RUN timeout 240 mvn -q -B -pl lab-chat-backend -am dependency:go-offline \
+    || echo "go-offline 超时或失败，跳过预下载（package 阶段会按需拉取）"
 COPY lab-chat-backend/src lab-chat-backend/src
-RUN mvn -q -B -pl lab-chat-backend -am package -DskipTests
+RUN timeout 900 mvn -q -B -pl lab-chat-backend -am package -DskipTests
 
 FROM eclipse-temurin:17-jre
 WORKDIR /app

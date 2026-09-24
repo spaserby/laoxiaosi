@@ -220,7 +220,13 @@ async function openScope() {
   try {
     scope.value = await syncScope()
   } catch (e) {
-    ElMessage.error(e.response?.status === 403 ? '需要管理员权限' : '法条清单加载失败')
+    // 按状态码区分原因：401 登录过期 / 403 无权限 / 其他 HTTP / 纯网络错误(0)
+    // （服务重启或网络抖动时 status === 0，提示"稍后重试"即可，别让人误以为功能坏了）
+    const hint = e.status === 401 ? '登录状态已过期，请重新登录后再试'
+      : e.status === 403 ? '需要管理员权限'
+      : e.status ? `法条清单加载失败（服务端 HTTP ${e.status}）`
+      : '法条清单加载失败：网络异常或服务正在重启，请稍后重试'
+    ElMessage.error(hint)
   }
 }
 
