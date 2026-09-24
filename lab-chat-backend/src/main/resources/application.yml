@@ -223,15 +223,17 @@ legal:
       max-pages: 30              # PDF 最大处理页数
       vl-model: deepseek-v4-flash   # 多模态模型（需支持视觉输入）
       vl-provider: deepseek      # 模型所属端点（与 vl-model 同族；换 qwen-vl-max 时改回 vl）
-    # ★ 分层配额（速率限流 + 日配额分离；-1 = 不限量；自然日重置）
+    # ★ 分层配额（速率限流 + 周期额度分离；-1 = 不限量；limit + period 决定口径）
+    #   周期：daily 自然日 / monthly 自然月（重置点为下月 1 日 00:00）
+    #   产品口径 2026-09：普通用户每月 50 次、律师每月 100 次；游客按日（IP 池共享）
     quota:
       enabled: true
       tiers:
-        guest:  { daily: 5,   rpm: 2 }    # 游客：日 5 次（IP 池共享防绕过）
-        user:   { daily: 50,  rpm: 10 }
-        lawyer: { daily: 200, rpm: 20 }
-        member: { daily: 500, rpm: 30 }   # 预留档（会员未上线）
-        admin:  { daily: -1,  rpm: -1 }   # 管理员不限量
+        guest:  { limit: 5,   period: daily,   rpm: 2 }    # 游客：日 5 次（IP 池共享防绕过）
+        user:   { limit: 50,  period: monthly, rpm: 10 }   # 普通用户：每月 50 次
+        lawyer: { limit: 100, period: monthly, rpm: 20 }   # 律师：每月 100 次
+        member: { limit: 500, period: monthly, rpm: 30 }   # 预留档（会员未上线）
+        admin:  { limit: -1,  period: monthly, rpm: -1 }   # 管理员不限量
     # ★ 城市劳动基准数据（getCityLaborStandard 工具数据源）：默认值在
     #   LaborStandardProperties 代码内（示例口径 2024），yml 不重复堆放；
     #   运维需免发版改值时按城市名覆盖（中文 Map 键必须加方括号）：
