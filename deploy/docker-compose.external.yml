@@ -1,0 +1,35 @@
+# ============================================================
+# 劳小司 · 外部服务部署编排（自有 PG/RDS + Tair/云 Redis）
+#   前提：deploy/.env 中的 PG_HOST/PG_PORT/PG_USER/PG_PASSWORD/PG_DB 与
+#         REDIS_HOST/REDIS_PORT/REDIS_PASSWORD(/REDIS_USERNAME) 指向外部实例，
+#         且当前服务器已在这些实例的白名单/VPC 内。
+#   使用：cp env.template .env 填值 → docker compose -f docker-compose.external.yml up -d --build
+#   与默认 docker-compose.yml（自包含：自带 PG+Redis 容器）互为替代，二选一。
+# ============================================================
+services:
+  backend:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.backend
+    image: deploy-backend:latest
+    container_name: lab-backend
+    restart: always
+    # 外部 PG/Redis 连接信息全部来自 .env（本文件不再覆盖容器内地址）
+    env_file: .env
+    expose:
+      - "8082"
+
+  frontend:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.frontend
+    image: deploy-frontend:latest
+    container_name: lab-frontend
+    restart: always
+    environment:
+      API_UPSTREAM: http://backend:8082
+    ports:
+      # 若宿主机宝塔 nginx 占 80：改 8080:80 并由宝塔反代 8080，或停宝塔 nginx
+      - "80:80"
+    depends_on:
+      - backend

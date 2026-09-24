@@ -1,0 +1,192 @@
+/* ============================================================
+   超级小律 · V9 公报问答台主题（按 design/concepts/superlaw-v9-gazette-desk.html 移植）
+   冷白桌面 · 白纸正刊 · 石墨墨 · 藏青强调 · 裁切标记 · 衬线正文 · mono 标签
+   文案约定：杂志主题词已全部法律化（Law Review / 法律咨询 / 咨询请求 / 我的能力）
+   ============================================================ */
+:root {
+  /* ---- V9 设计令牌 ---- */
+  --desk: #F2F3F5;            /* 冷白桌面 */
+  --paper: #FFFFFF;           /* 白纸正刊 */
+  --ink: #16191F;             /* 石墨墨 */
+  --soft: #4E545E;            /* 次级文字 */
+  --faint: #9BA1AA;           /* 弱标签 */
+  --acc: #1E3A8A;             /* 藏青强调 */
+  --acc-soft: rgba(30, 58, 138, .07);
+  --line: rgba(22, 25, 31, .14);
+  --line-soft: rgba(22, 25, 31, .08);
+  --line-ink: #16191F;
+  --serif: "Noto Serif SC", serif;
+  --sans: "Noto Sans SC", sans-serif;
+  --iserif: "Instrument Serif", serif;
+  --itight: "Inter Tight", sans-serif;
+  --mono: "IBM Plex Mono", monospace;
+  --spring: cubic-bezier(.22, 1.4, .36, 1);
+  --soft-ease: cubic-bezier(.4, 0, .2, 1);
+  --sw: 284px;                /* 左栏宽 */
+  --sw-rail: 80px;            /* 左栏折叠宽 */
+  --sheet: 884px;             /* 正刊最大宽 */
+
+  /* ---- 旧 --sl-* 兼容映射（Library/Tools/Auth 视图过渡用） ---- */
+  --sl-grad-from: #16191F;
+  --sl-grad-to: #2A3550;
+  --sl-grad: linear-gradient(135deg, #16191F, #2A3550);
+  --sl-canvas: var(--desk);
+  --sl-surface: var(--acc-soft);
+  --sl-ink: var(--ink);
+  /* 旧视图次级色加深一档：避免灰字在白底上发虚 */
+  --sl-text: #363D47;
+  --sl-sub: #59616D;
+  --sl-faint: #7E8794;
+  --sl-accent: var(--acc);
+  --sl-line: var(--line-soft);
+  --sl-card-line: var(--line);
+  --sl-radius-lg: 2px;
+  --sl-radius-md: 2px;
+  --sl-radius-sm: 2px;
+  --sl-shadow-btn: 0 8px 20px rgba(30, 58, 138, .25);
+  --sl-shadow-input: 0 16px 44px rgba(22, 25, 31, .13);
+
+  /* ---- Element Plus 主色对齐藏青 ---- */
+  --el-color-primary: #1E3A8A;
+  --el-color-primary-light-3: #40579B;
+  --el-color-primary-light-5: #6B7FB8;
+  --el-color-primary-light-7: #A3AED4;
+  --el-color-primary-light-8: #C2C9E3;
+  --el-color-primary-light-9: #E4E7F1;
+  --el-color-primary-dark-2: #182E6E;
+  --el-border-radius-base: 2px;
+  --el-font-family: var(--sans);
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+html, body, #app { height: 100%; }
+html { -webkit-font-smoothing: antialiased; }
+
+body {
+  /* 全局默认黑体：衬线小字号在 Windows 屏上发虚，报纸感交给标题级大字（组件内显式声明 serif） */
+  font-family: var(--sans);
+  color: var(--ink);
+  background: var(--desk);
+  overflow-x: hidden;
+}
+
+::selection { background: var(--acc); color: #fff; }
+
+button { font-family: inherit; cursor: pointer; color: inherit; background: none; border: none; }
+input, textarea { font-family: inherit; }
+svg { display: block; }
+
+/* ============ 桌面：格纸 + 颗粒 + 光晕（App.vue 挂载 .desk） ============ */
+.desk {
+  position: fixed; inset: 0; z-index: 0; pointer-events: none;
+  background-image: linear-gradient(var(--line-soft) 1px, transparent 1px),
+                    linear-gradient(90deg, var(--line-soft) 1px, transparent 1px);
+  background-size: 32px 32px;
+}
+.desk::before {
+  content: ""; position: absolute; inset: 0; opacity: .5;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2'/%3E%3CfeColorMatrix values='0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 .035 0'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+.desk::after {
+  content: ""; position: absolute; inset: 0;
+  background: radial-gradient(ellipse 66% 54% at 42% 26%, rgba(255, 255, 255, .9), transparent 70%);
+}
+
+/* ============ 应用外壳：固定左栏 + 主区 margin 让位 ============ */
+.app-shell { position: relative; z-index: 1; height: 100%; }
+.app-main {
+  margin-left: var(--sw);
+  height: 100%;
+  display: flex; flex-direction: column;
+  min-width: 0;
+  transition: margin .5s var(--spring);
+}
+body.rail .app-main { margin-left: var(--sw-rail); }
+
+/* ============ 滚动条 ============ */
+::-webkit-scrollbar { width: 4px; height: 4px; }
+::-webkit-scrollbar-thumb { background: var(--line); border-radius: 3px; }
+::-webkit-scrollbar-track { background: transparent; }
+
+/* ============ 移动端（day23 精修：侧栏变汉堡抽屉，首屏直出内容） ============ */
+.menu-btn, .drawer-mask { display: none; }
+
+@media (max-width: 860px) {
+  /* 汉堡按钮：与品牌标同款的纸方 + 墨线（App.vue 挂载，位于 app-shell 内与抽屉同层叠上下文）
+     translateZ(0) 强制独立合成层，缓解个别 in-app 浏览器 fixed 不跟滚的抖动 */
+  .menu-btn {
+    display: grid; place-items: center;
+    position: fixed; top: 14px; left: 14px; z-index: 55;
+    width: 40px; height: 40px;
+    background: rgba(255, 255, 255, .94); border: 1px solid var(--line-ink); color: var(--ink);
+    backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+    transform: translateZ(0);
+  }
+  .menu-btn:active { transform: scale(.94); }
+
+  /* 抽屉遮罩（与抽屉同处 app-shell 层叠上下文：58 < 抽屉60，故抽屉在遮罩之上可点） */
+  .drawer-mask {
+    display: block; position: fixed; inset: 0; z-index: 58;
+    background: rgba(22, 25, 31, .38); opacity: 0; pointer-events: none;
+    transition: opacity .3s var(--soft-ease);
+  }
+  .drawer-mask.on { opacity: 1; pointer-events: auto; }
+
+  /* 外壳：主区全宽（首屏直接是内容） */
+  .app-shell { height: auto; min-height: 100%; }
+  .app-main, body.rail .app-main { margin-left: 0; height: auto; min-height: 100vh; }
+
+  /* 侧栏：改抽屉，默认滑出屏外；.drawer-open 时滑入
+     注：scoped .side 的 z-index:30 与 transition:width 特异性更高，
+     这里必须 !important 才能盖过（否则抽屉压在遮罩下且无滑动动画） */
+  .sidebar {
+    position: fixed !important; top: 0; bottom: 0; left: 0; margin: 0;
+    width: min(86vw, 330px) !important; height: 100vh;
+    transform: translateX(-105%); z-index: 60 !important;
+    box-shadow: 0 0 44px rgba(22, 25, 31, .22);
+    transition: transform .38s var(--soft-ease) !important;
+    overflow-y: auto;
+  }
+  body.rail .sidebar { width: min(86vw, 330px) !important; }
+  .app-shell.drawer-open .sidebar { transform: translateX(0); }
+  /* 折叠态在移动端无意义：文案恒显、藏起折叠钮（scoped 样式优先级更高，需 !important 覆盖） */
+  body.rail .btext { opacity: 1 !important; pointer-events: auto !important; }
+  body.rail .nav-label { opacity: 1 !important; }
+  body.rail .newtext { display: inline !important; }
+  .sidebar .fold { display: none !important; }
+
+  /* 投递口贴底全宽 + iPhone home 指示条安全区（需 index.html viewport-fit=cover） */
+  .dockwrap, body.rail .dockwrap {
+    left: 0 !important; padding: 0 12px 12px;
+    padding-bottom: calc(12px + env(safe-area-inset-bottom)) !important;
+  }
+
+  /* Element Plus 对话框小屏防溢出（设置框固定 400px 宽于 375px 屏） */
+  .el-dialog { width: min(92vw, 400px) !important; }
+
+  /* 页面顶部给汉堡按钮留位（内容页页眉左对齐处不与之碰撞） */
+  .page-scroll { padding-top: 64px !important; }
+  .tools-page, .lib-page { padding-top: 64px !important; }
+
+  /* 触控目标加大（≥40px）；发送按钮收为图标把宽度让给输入框 */
+  .send-btn { height: 44px !important; padding: 0 12px !important; }
+  .send-label { display: none; }
+  .dock-btn { width: 42px !important; height: 42px !important; }
+  .newbtn { padding: 14px !important; }
+  .wsn button, .hist button { padding: 13px 12px !important; font-size: 13.5px !important; }
+  .account { padding: 12px !important; }
+  .q-item { padding: 18px 2px 16px !important; }
+
+  /* iOS 聚焦不缩放：输入字号必须 ≥16px */
+  #input { font-size: 16px !important; }
+}
+
+/* ============ 降级动效 ============ */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important;
+  }
+}

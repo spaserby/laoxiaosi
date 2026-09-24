@@ -1,0 +1,37 @@
+# Maven
+target/
+*.jar
+*.war
+!.mvn/wrapper/maven-wrapper.jar
+
+# IDE
+.idea/
+*.iml
+*.iws
+*.ipr
+.vscode/
+.settings/
+.project
+.classpath
+
+# 日志
+logs/
+*.log
+
+# 系统
+.DS_Store
+Thumbs.db
+/super-law-frontend/node_modules/
+super-law-frontend/dist/
+
+# AI 助手工具留档（Qoder/WorkBuddy 等，不入库）
+.qoder/
+.workbuddy/
+
+# 开源清理暂存区（手动确认后整体删除，禁入库）
+_待删除_开源清理/
+
+# 环境变量与密钥（真实值只存服务器/本地，禁入库）
+/.env
+deploy/.env
+*.dump

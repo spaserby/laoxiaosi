@@ -1,0 +1,270 @@
+# ============================================================
+# backend 配置（SSE 流式聊天 + 停止生成 + Redis 会话记忆 + 工具调用）
+# 当前状态：纯本地配置（Nacos 已停用并移除，测试阶段不引入配置中心）
+# ============================================================
+server:
+  port: 8082
+
+spring:
+  application:
+    name: backend
+  # ★ WebFlux multipart 单 part 内存上限（默认 256KB，超过即
+  #   DataBufferLimitException → 图片上传 500 的根因）；110MB 覆盖单文件 100MB 上限（对标 DeepSeek）
+  codec:
+    max-in-memory-size: 110MB
+
+  # ==================== 本地配置 ====================
+  # Redis 连接（redisson-spring-boot-starter 自动读取该配置创建 RedissonClient）
+  # REDIS_HOST 默认 localhost；若 Redis 部署在远程服务器（如阿里云），设置环境变量 REDIS_HOST 即可
+  data:
+    redis:
+      host: ${REDIS_HOST:127.0.0.1}
+      # 云 Redis（阿里云 Tair 等）为"账号+密码"体系：注入环境变量 REDIS_USERNAME 即可；
+      # 自建/本地 Redis（≤5.0 无账号体系）留空即可——空值由 RedisUsernameConfig 归一为
+      # null（空串会被 Redisson 当作 ACL 账号发出 AUTH "" pwd，在 5.0 上连接失败）
+      username: ${REDIS_USERNAME:}
+      password: ${REDIS_PASSWORD:local-dev-redis}
+      # ★ VectorStore 缺失的真正原因：Redisson 的 RedissonConnectionFactory 抑制了 Spring Boot
+      #   连接工厂自动装配，导致 Spring AI 向量库要求的 JedisConnectionFactory Bean 不存在；
+      #   修复见 RedisVectorStoreConfig（手动注册）。client-type 在本项目无实际作用，保留无害
+      client-type: jedis
+  # ★ 底账/记忆/向量全迁 PostgreSQL（本地 PG 18 + pgvector）；
+  #   Redis 退居缓存/分布式锁/配额计数等易失态（Tair 兼容形态）
+  datasource:
+    url: jdbc:postgresql://${PG_HOST:127.0.0.1}:${PG_PORT:5432}/${PG_DB:lab_legal_kb}
+    username: ${PG_USER:postgres}
+    password: ${PG_PASSWORD:postgres}
+    driver-class-name: org.postgresql.Driver
+  ai:
+    openai:
+      # ★ 禁用 OpenAI 自动装配的 ChatModel（chat 已交给多路路由），只保留 embedding 给 RAG 用
+      chat:
+        enabled: false
+      # ★ embedding 走百炼 DashScope（OpenAI 兼容协议）：Token 套餐内无 embedding 模型，
+      #   改用百炼控制台申请的普通 API-Key（有免费额度），与套餐 Key 是两套体系
+      # 注意：base-url 不带末尾的 /v1，Spring AI 会自动拼接
+      base-url: https://maas.qianwenaiapi.com/compatible-mode/v1
+      # ★ 在这里填入千问普通 API Key（也可通过环境变量 DASHSCOPE_API_KEY 注入，避免明文提交）
+      api-key: ${DASHSCOPE_API_KEY:}
+      # ★ 向量模型（千问 qwen3.7-text-embedding-flash，实测 1024 维；模型名大小写敏感，必须小写）
+      embedding:
+        options:
+          model: qwen3.7-text-embedding-flash
+  # ★ PgVectorStore（pgvector 扩展 + HNSW 索引；initialize-schema 自动建 vector_store 表）
+  # 维度必须显式声明（与 embedding 模型输出维对齐，实测 qwen3.7-text-embedding-flash = 1024）
+  # ★ 重启幂等：initialize-schema 每次启动都执行一组 CREATE ... IF NOT EXISTS，
+  #   已存在即空转跳过——重启任意多次都不会 DROP 表/碰数据，安全。
+  # ★ 反面告诫：IF NOT EXISTS 同时意味着"改配置不生效"——日后改 dimensions/index-type/distance-type，
+  #   已存在的表不会自动修改（运行时报维度不匹配）。正确四步曲：
+  #   ① DROP TABLE vector_store;  ② DELETE FROM rag_ledger;（不清指纹同步会判"无变更"不重嵌）
+  #   ③ 重启后端按新配置重建表；  ④ 管理端点一次同步全量重嵌。
+  #   （仅换 embedding 模型名无需此流程：指纹含模型名盐，点同步即自动全量重建）
+    vectorstore:
+      pgvector:
+        initialize-schema: true
+        dimensions: 1024
+        index-type: hnsw
+        distance-type: COSINE_DISTANCE
+        schema-name: public
+        table-name: vector_store
+
+# ★ MyBatis（取代 JPA）：下划线列名自动驼峰映射（password_hash→passwordHash 等）
+#   告诫：前缀是根级 mybatis.*，写在 spring: 下面（spring.mybatis.*）不生效——
+#   曾因此导致登录读出的 passwordHash 恒为 null、所有用户报"密码错误"
+mybatis:
+  configuration:
+    map-underscore-to-camel-case: true
+
+# 会话记忆配置（与主工程 lab-ai 的 ChatMemoryProperties 保持同一前缀，便于对照学习）
+legal:
+  ai:
+    # ★ 身份卡（配置层）：模型被问"你是谁"时逐字复述 intro；
+    #   装配进 system prompt 头部（每轮必达），前端头版文案与此同源
+    identity:
+      name: 劳小司
+      tagline: 一位较真的AI法律助手
+      intro: 你好，我是劳小司：一位较真的AI法律助手。我读的是现行有效的法条与司法解释，给的是能溯源引用、能核算金额的结论。
+    # ★ 多路模型配置（providers = 端点，routes = 路线，keywords = 路由规则）
+    # 五路：DeepSeek 端点 flash/v4-pro + MaaS 端点 deepseek-flash/deepseek-v4-pro/qwen3.8-max
+    # 模型名按你实际开通的为准；加模型只改本配置，代码不动
+    model:
+      providers:
+        deepseek:
+          base-url: https://api.deepseek.com
+          api-key: ${DEEPSEEK_API_KEY:}
+          temperature: 0.7
+        qwen:
+          base-url: https://api.deepseek.com
+          api-key: ${AI_API_KEY:}
+          temperature: 0.7
+        # 备用多模态端点：千问 compatible-mode（qwen-vl-max；切换时改 files.vl-model + vl-provider 两项）
+        vl:
+          base-url: https://maas.qianwenaiapi.com/compatible-mode/v1
+          api-key: ${DASHSCOPE_API_KEY:}
+          temperature: 0.4
+      routes:
+        default: deepseek/deepseek-v4-flash          # 日常对话（便宜、快）
+        reasoning: deepseek/deepseek-v4-flash       # 复杂推理（贵、准）
+        cheap: deepseek/deepseek-v4-flash           # MaaS 端点的 flash（套餐内实际模型名带 -0731 后缀）
+        legal: deepseek/deepseek-v4-flash               # MaaS 端点的 v4-pro（法律专业路线）
+        fallback: deepseek/deepseek-v4-flash                # 主路线失败时的兜底路线
+      # ★ 路线级 temperature 差异化（未配置的路线用 provider 默认 0.7）
+      temperatures:
+        legal: 0.4          # 法律回答低温稳定，减少发挥
+        reasoning: 0.5
+        cheap: 0.9          # 闲聊高温活泼
+      # ★ Spring AI 不透传厂商私有思考参数（enable_thinking/thinking_budget），
+      #   思考强度通过"路线选模型"实现：需深思考时将 reasoning 路线换推理模型
+      #   （如 deepseek-reasoner / qwen 思考版），cheap 路线用非思考模型省成本；零代码改动
+      keywords:
+        reasoning: ["为什么", "分析", "原理", "推理", "深入", "详细解释"]
+        cheap: ["你好", "闲聊", "讲个笑话"]
+        legal: ["法律", "法条", "法规", "合同", "劳动", "诉讼", "律师", "赔偿", "补偿"]
+      # ★ 三级级联路由编排（关键词硬规则 → 语义向量快筛 → LLM 分类兜底）
+      # 成本递增逐层升级，能不调 LLM 就不调；移除 layers 中某项即禁用该层
+      router:
+        layers: [keyword, semantic, llm]
+        llm-route-model: deepseek/deepseek-v4-flash   # LLM 路由层用的廉价分类模型
+        semantic-threshold: 0.75                   # 语义快筛余弦相似度阈值
+        desc:                                      # 路线说明，拼进 LLM 路由层分类 Prompt
+          default: 日常对话、闲聊、通用知识问答
+          reasoning: 复杂推理、原因分析、详细解释等深度思考问题
+          cheap: 问候、寒暄、笑话等低成本场景
+          legal: 法律咨询、法条、合同、劳动、诉讼等专业问题
+      # 语义路由示例语料：每条路线 2-3 句代表性问句（向量化求平均作为路线质心）
+      examples:
+        reasoning:
+          - "为什么天空是蓝色的？"
+          - "请深入分析一下这家公司破产的原因"
+          - "详细解释快速排序的原理"
+        cheap:
+          - "你好呀"
+          - "给我讲个笑话"
+          - "随便聊聊，别太认真"
+        legal:
+          - "公司解除劳动合同我能要多少补偿"
+          - "借条的诉讼时效是多久"
+          - "离婚诉讼财产怎么分割"
+        default:
+          - "法国的首都是哪里"
+          - "红烧肉怎么做"
+          - "推荐一部科幻电影"
+      # ★ 路线差异化工具与预算（不同档位路线挂不同工具集 + 工具调用总上限）
+      # cheap 闲聊不挂检索工具（模型想查也无工具可调，零成本）；legal 专业路线全量工具（含联网）更高预算；
+      # max-tool-calls 是 ReAct 循环的停止条件
+      route-tools:
+        # 预算分级上调（大厂标准：同步对话 P95≤8 轮；正式回答基础 12 + 审校重试追加 8 = 上限 20）
+        default:  {tools: [searchLawTool, webSearchTool], max-tool-calls: 6}
+        reasoning: {tools: [searchLawTool, webSearchTool], max-tool-calls: 8}
+        cheap:    {tools: [], max-tool-calls: 0}
+        legal:    {tools: [searchLawTool, webSearchTool, laborTools, generalLegalTools], max-tool-calls: 12}
+        fallback: {tools: [searchLawTool, webSearchTool, laborTools, generalLegalTools], max-tool-calls: 12}
+      # 审校重试追加预算（与 route-tools 同级；系统质量门触发，非用户行为；legal 总上限 12+8=20）
+      retry-budget-grant: 8
+    chat-memory:
+      window-size: 10                  # （已废弃，由 verbatim-rounds + 摘要取代）
+      verbatim-rounds: 4               # 原文保留轮数，超出部分裁剪并异步摘要
+      summary-enabled: true            # 早期历史摘要开关（上下文压缩）
+      summary-route: cheap             # 摘要用廉价路线
+      # 记忆落 PG chat_message/chat_summary 表（持久化，不再 24h 过期）；
+      #   redis-key-prefix/ttl-hours 随 Redis 记忆实现一同下线
+    # RAG 检索增强配置（检索侧改为 searchLaw 工具由模型按需调用，
+    # top-k 即每次工具调用的返回条数；导入管道不变，仍启动时从 MySQL 底账增量同步）
+    rag:
+      enabled: true            # RAG 总开关，false 时降级为纯对话
+      top-k: 5                 # 精排后注入 Prompt 的条数（两阶段检索窄出）
+      recall-top-k: 12         # 粗召回条数（宽进保召回率，交 rerank 精排）
+      rerank-enabled: true     # gte-rerank-v2 精排开关，失败降级为融合序截断
+      rerank-model: gte-rerank-v2
+      rerank-api-key: ${DASHSCOPE_API_KEY:}
+      bm25-enabled: true       # 混合检索稀疏路
+      bm25-top-k: 10
+      chunk-max-length: 480    # 长条文分块阈值（Small-to-Big）
+      # 相似度阈值——低于此值的召回视为未命中（降噪 + 激活落空分支）
+      similarity-threshold: 0.55
+      # 强制检索打底的路线名单（取代硬编码 "legal" 判断）
+      grounded-routes: [legal]
+      import-on-startup: false  # 改为管理端按钮手动触发（/admin/sync-vectors）
+    # ★ 用户认证（JWT 无状态 + Mock 短信；注册/登录/验证码重置密码）
+    auth:
+      jwt-secret: ${JWT_SECRET:change-me-in-production-legal-assistant-dev-secret}   # 生产用环境变量替换
+      jwt-expire-hours: 24
+      # 首发管理员提权（上线时注入 BOOTSTRAP_ADMIN=已注册用户名，启动即提权；首发后清除）
+      bootstrap-admin: ${BOOTSTRAP_ADMIN:}
+      sms-mock-echo: true      # 开发期验证码回显（/auth/sms-code 响应 devCode）；接真实短信后必须 false
+      sms-code-ttl-seconds: 300
+      sms-resend-interval-seconds: 60
+      sms-daily-limit: 10
+      sms-max-verify-fails: 5
+      # 短信通道切换——mock（默认，只写日志）| aliyun（阿里云个人版短信认证 dypnsapi）
+      # 注意：本段必须留在 auth 下（6 空格缩进），曾因 files 段插入位置错误被吞导致 mock 生效
+      sms-provider: aliyun
+      aliyun:
+        access-key-id: ${ALIYUN_SMS_AK:}
+        access-key-secret: ${ALIYUN_SMS_SK:}
+        sign-name: ${ALIYUN_SMS_SIGN:}
+        template-code: ${ALIYUN_SMS_TEMPLATE:100001}
+        # 个人版短信认证（dypnsapi）：验证码由阿里云生成+核验，模板参数固定 {"code":"##code##"} 代码内置
+        endpoint: dypnsapi.aliyuncs.com
+    # ★ 会话附件多模态配置（四坑防御限额：token/噪声/caption 成本/超长文档）
+    files:
+      max-images-per-turn: 8     # 单轮图片总数上限（qwen-vl 单图约千级 token）
+      max-images-per-doc: 6      # 单文档抽图上限
+      caption-limit: 3           # 每文档 caption 限流（并行 + 超时降级）
+      caption-timeout-seconds: 8
+      min-image-px: 64           # 最小有效边长（图标/分隔线噪声过滤）
+      max-pages: 30              # PDF 最大处理页数
+      vl-model: deepseek-v4-flash   # 多模态模型（需支持视觉输入）
+      vl-provider: deepseek      # 模型所属端点（与 vl-model 同族；换 qwen-vl-max 时改回 vl）
+    # ★ 分层配额（速率限流 + 日配额分离；-1 = 不限量；自然日重置）
+    quota:
+      enabled: true
+      tiers:
+        guest:  { daily: 5,   rpm: 2 }    # 游客：日 5 次（IP 池共享防绕过）
+        user:   { daily: 50,  rpm: 10 }
+        lawyer: { daily: 200, rpm: 20 }
+        member: { daily: 500, rpm: 30 }   # 预留档（会员未上线）
+        admin:  { daily: -1,  rpm: -1 }   # 管理员不限量
+    # ★ 城市劳动基准数据（getCityLaborStandard 工具数据源）：默认值在
+    #   LaborStandardProperties 代码内（示例口径 2024），yml 不重复堆放；
+    #   运维需免发版改值时按城市名覆盖（中文 Map 键必须加方括号）：
+    # labor-standards:
+    #   cities:
+    #     "[北京]": { min-wage: 2540, avg-wage: 11761, note: "官方值 2026，来源北京市人社局" }
+    # ★ 确定性安全层（纯规则引擎，零 LLM 调用——"不让 LLM 自己看守自己"）
+    # 四道关卡：拒答拦截（胜诉承诺/诉状代写）/ 紧急置顶（刑事人身危险）/
+    #           高风险检索落空提示/ 免责声明强制附加；
+    # 词表/文案均有代码默认值，下方可按需覆盖，全删则用默认
+    safety:
+      enabled: true
+    # ★ Reviewer 质量门（纯规则引擎零 LLM，与 不让 LLM 自己看守自己）
+    # legal 路线回答生成完毕后审校（必须有法条引用/来源标注 + 长度下限），
+    # 不通过自动重试一轮（SSE retry 事件通知前端清空重接），重试仍不通过则放行不无限回炉
+    review:
+      enabled: true
+      routes: [legal]          # 仅严肃路线过审（重试成本只花在值得的地方）
+      min-length: 30           # 回答长度下限，低于视为敷衍
+    # ★ Planner Agent：
+    # 仅多轮对话（history 非空）触发一次廉价模型改写，单轮零额外调用；改写失败降级原问题
+    planner:
+      enabled: true
+      rewrite-route: cheap     # 改写用的廉价路线（route-tools 同一套路线体系）
+    # ★ 联网搜索配置（LLM-as-Search-Tool：辅助能力，仅 legal/fallback 路线挂载 webSearchTool）
+    # 模式：webSearch 工具内部直调千问 qwen 联网子模型（enable_search），复用千问 Key，零新增账号；
+    # 与搜索 API 方案的差异：搜索范围无法在 API 层硬限定域名，"只采信官方来源"由子模型
+    # 检索员提示词软约束（输出逐条带来源网址，供用户核验）；子模型默认提示词在代码里，可在此覆盖
+    web-search:
+      enabled: true            # 总开关，false 时 webSearch 返回降级文案（模型不联网）
+      llm:
+        # 联网子模型换 DeepSeek 原生（实测 deepseek-v4-flash 支持 enable_search，
+        # 参数名与 DashScope 同名，WebSearchTool 代码零改动；且该模型默认返回
+        # reasoning_content，深度思考经 ThinkingPanel 透传展示）
+        base-url: https://api.deepseek.com
+        # 复用 DeepSeek 主 Key（与 providers.deepseek 同一套）
+        api-key: ${DEEPSEEK_API_KEY:}
+        model: deepseek-v4-flash
+        timeout-seconds: 30     # 联网检索含搜索耗时，超时比普通对话宽
+
+logging:
+  level:
+    com.law.backend: debug

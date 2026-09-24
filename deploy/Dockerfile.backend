@@ -1,0 +1,19 @@
+# 后端镜像：多阶段构建（Maven JDK17 编译 → JRE17 运行）
+# 构建上下文 = 仓库根（compose 里 context: ..），因 pom 为父子结构
+FROM maven:3.9-eclipse-temurin-17 AS build
+WORKDIR /src
+# 阿里云 Maven 镜像：国内/阿里云 ECS 构建加速（实测从 ~50KB/s 提升到内网带宽）
+COPY deploy/maven-settings.xml /root/.m2/settings.xml
+# 先拷 pom 拉依赖（利用层缓存：依赖不变则不重下）
+COPY pom.xml .
+COPY lab-chat-backend/pom.xml lab-chat-backend/
+RUN mvn -q -B -pl lab-chat-backend -am dependency:go-offline || true
+COPY lab-chat-backend/src lab-chat-backend/src
+RUN mvn -q -B -pl lab-chat-backend -am package -DskipTests
+
+FROM eclipse-temurin:17-jre
+WORKDIR /app
+COPY --from=build /src/lab-chat-backend/target/*.jar app.jar
+# 2C2G 画像：堆 1g 上限，元空间/直接内存留余量给 Netty SSE
+ENV JAVA_OPTS="-Xms512m -Xmx1g -XX:MaxMetaspaceSize=256m"
+ENTRYPOINT ["sh", "-c", "java $JAVA_OPTS -jar app.jar"]
