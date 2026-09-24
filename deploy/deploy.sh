@@ -50,7 +50,9 @@ if [ "$DO_DB" = "1" ]; then
   trap 'rm -f "$TMPENV"' EXIT
   grep -E '^PG_PASSWORD=' deploy/.env | head -1 | sed 's/^PG_PASSWORD=/PGPASSWORD=/' | tr -d '\r' > "$TMPENV"
   run_sql() {
-    docker run --rm -i --env-file deploy/.env --env-file "$TMPENV" postgres:17-alpine \
+    # client_min_messages=warning：幂等脚本会打一堆 "already exists, skipping" NOTICE，压掉噪音
+    docker run --rm -i -e PGOPTIONS='-c client_min_messages=warning' \
+      --env-file deploy/.env --env-file "$TMPENV" postgres:17-alpine \
       sh -c 'psql -h "$PG_HOST" -p "${PG_PORT:-5432}" -U "$PG_USER" -d "$PG_DB" -v ON_ERROR_STOP=1 -q -f -'
   }
   for f in scripts/migration-01-doc-type-and-dedupe.sql scripts/migration-02-session-owner.sql db/init.sql; do

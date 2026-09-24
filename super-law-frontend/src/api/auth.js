@@ -18,7 +18,12 @@ http.interceptors.response.use(
   (r) => r,
   (err) => {
     const msg = err.response?.data?.message || err.message || '网络异常，请稍后重试'
-    return Promise.reject(new Error(msg))
+    const e = new Error(msg)
+    // ★ 保留 HTTP 状态码：调用方需要区分「登录过期 401 / 无权限 403 / 服务端 500 /
+    //   纯网络错误(0)」——此前 Error 只带 message，调用方只能笼统提示"加载失败"，
+    //   线上排障时看不出到底是哪一种（本次勾选清单报错即踩到）
+    e.status = err.response?.status ?? 0
+    return Promise.reject(e)
   }
 )
 
