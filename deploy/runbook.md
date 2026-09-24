@@ -70,6 +70,38 @@ bash deploy/probes.sh http://127.0.0.1
 - `sse-streaming`：20s 内见 `event:` —— 失败=proxy_buffering 未关或后端未活；
 - `admin-auth-guard`：未登录访问管理接口必须 401/403。
 
+## 5.5 日常发布（git 化，一条命令）
+
+服务器 `/opt/legal-assistant` 已初始化为 git 工作副本（origin = GitHub 仓库）。
+首次配置 Deploy Key（只读即可，**不要**用 PAT，也**不要**把 token 写进 remote URL）：
+
+```bash
+# 服务器上生成专用密钥（已有 /root/.ssh/github_deploy 则跳过）
+ssh-keygen -t ed25519 -N "" -C "legal-assistant-deploy@$(hostname)" -f /root/.ssh/github_deploy
+cat /root/.ssh/github_deploy.pub     # 把这一行加到 GitHub 仓库 Settings → Deploy keys（勾选只读）
+# 本机 ~/.ssh/config 也可加 Host github.com + IdentityFile 方便调试
+```
+
+之后每次发布（服务器上执行）：
+
+```bash
+bash deploy/deploy.sh
+# = git pull --ff-only → 数据库迁移（幂等）→ docker compose up -d --build → 探针
+# 变体：--no-db 只更新代码与镜像；--no-pull 用工作区当前提交发布（应急）
+```
+
+**拉取前置条件**：`git fetch origin` 能通（Deploy Key 已加）。拿不到远端时脚本会告警并
+退回"用当前提交发布"，不会静默失败。首次把工作副本接到 origin 后，如上游分支尚未建立：
+
+```bash
+git fetch origin && git branch --set-upstream-to=origin/main main
+```
+
+> ⚠ **严禁在本目录执行 `git clean -xfd`**：`deploy/.env` 是未跟踪文件（真实密钥），
+> 会被一并删除。同理不要用 `git clean` 清理任何未跟踪文件。
+> ⚠ 服务器到 GitHub 的 **HTTPS(443) 常被墙**，git 必须走 SSH（`git@github.com:...`），
+> 这也是 remote 用 SSH 地址的原因。
+
 ## 6. 回滚
 
 ```bash
@@ -86,7 +118,8 @@ docker compose up -d --build
 - `pg_restore` 到**非空**库、`drop schema/table`、`truncate`；
 - `redis-cli flushall/flushdb`；
 - 修改安全组/防火墙规则、删除 .env 备份；
-- 宿主机 `rm -rf` 任何目录。
+- 宿主机 `rm -rf` 任何目录；
+- `git clean -xfd`（会删除未跟踪的 `deploy/.env`）。
 
 ## 部署契约（DoD，防模板腐化）
 
