@@ -68,8 +68,22 @@ public class IngestOfficial {
             .build();
 
     /** Wholesale row of the whitelist. */
-    private record LawSpec(String lawName, int deptCode, String docType, String category, long idStart) {
+    private record LawSpec(String lawName, int deptCode, String docType, String category, long idStart,
+                           String bbbs) {
     }
+
+    /**
+     * 抓取缓存目录：列表分页与官方 docx 都落盘缓存。
+     * <p>全量导入要抓上千份 docx，必然会撞上站点 WAF 限流；有缓存才能"被拦后重跑接着走"，
+     * 不重复抓同一份文件。（环境变量 INGEST_CACHE 可改，默认 ~/.cache/legal-ingest）
+     */
+    private static final Path CACHE_DIR = Path.of(
+            System.getenv().getOrDefault("INGEST_CACHE",
+                    System.getProperty("user.home") + "/.cache/legal-ingest"));
+
+    /** 请求间隔（毫秒，默认 500；WAF 拦得紧时调大，如 1500） */
+    private static final long PACE_MS = Long.parseLong(
+            System.getenv().getOrDefault("INGEST_SLEEP_MS", "500"));
 
     /** One parsed article: number token, body, and its bian/zhang/jie context. */
     private static final class Art {
@@ -108,7 +122,7 @@ public class IngestOfficial {
         int totalArts = 0, ok = 0;
         List<LawSpec> missing = new ArrayList<>();
         for (LawSpec s : specs) {
-            String row = findRow(rowsByDept.get(s.deptCode()), s.lawName());
+            String row = findRow(rowsByDept.get(s.deptCode()), s);
             if (row == null) {
                 missing.add(s);
                 System.out.println("  NOT FOUND in dept " + s.deptCode() + ": " + s.lawName());
@@ -134,7 +148,6 @@ public class IngestOfficial {
                     + "  " + s.lawName()
                     + (p.warnings.isEmpty() ? "" : "   WARN " + p.warnings.get(0))
                     + (block == null ? "" : ""));
-            sleep(400);                                // stay under the WAF rate limit
         }
 
         Files.createDirectories(out.getParent());
@@ -170,8 +183,12 @@ public class IngestOfficial {
             if (c.length < 5) {
                 throw new IllegalArgumentException("bad map row (need 5 tab-separated columns): " + line);
             }
+            // 第 6 列（可选）：官方 bbbs 文档号。带它时按文档号精确匹配，
+            // 不再按标题匹配——全量清单由生成器产出，标题可能因官方调整而漂移。
+            String bbbs = c.length >= 6 ? c[5].strip() : null;
             out.add(new LawSpec(c[0].strip(), Integer.parseInt(c[1].strip()), c[2].strip(),
-                    c[3].strip(), Long.parseLong(c[4].strip())));
+                    c[3].strip(), Long.parseLong(c[4].strip()),
+                    bbbs == null || bbbs.isEmpty() ? null : bbbs));
         }
         return out;
     }
@@ -182,17 +199,28 @@ public class IngestOfficial {
     private static List<String> fetchDept(int dept) throws Exception {
         List<String> rows = new ArrayList<>();
         int total = Integer.MAX_VALUE;
+        int cached = 0;
         for (int page = 1; page <= 60 && rows.size() < total; page++) {
-            String body = "{\"orderByParam\":{\"order\":\"-1\",\"sort\":\"\"},\"flfgCodeId\":[" + dept
-                    + "],\"zdjgCodeId\":[],\"gbrqYear\":[],\"searchType\":1,\"searchRange\":\"1\","
-                    + "\"searchContent\":\"\",\"pageNum\":" + page + ",\"pageSize\":20}";
+            String cacheName = "list-" + dept + "-" + page + ".json";
+            final int pageNo = page;                   // lambda 需要 effectively-final
+            boolean hit = Files.exists(CACHE_DIR.resolve(cacheName));
             String json = null;
             List<String> page1 = List.of();
             for (int attempt = 0; attempt < 3 && page1.isEmpty(); attempt++) {
                 if (attempt > 0) {
-                    sleep(1200L * attempt);           // the listing endpoint throttles bursts
+                    sleep(1500L * attempt);           // the listing endpoint throttles bursts
                 }
-                json = post(LIST_URL, body);
+                json = cachedGet(cacheName, () -> {
+                    String body = "{\"orderByParam\":{\"order\":\"-1\",\"sort\":\"\"},\"flfgCodeId\":["
+                            + dept + "],\"zdjgCodeId\":[],\"gbrqYear\":[],\"searchType\":1,"
+                            + "\"searchRange\":\"1\",\"searchContent\":\"\",\"pageNum\":" + pageNo
+                            + ",\"pageSize\":20}";
+                    try {
+                        return post(LIST_URL, body);
+                    } catch (Exception e) {
+                        throw new RuntimeException(e);
+                    }
+                });
                 page1 = splitRows(json);
             }
             if (page1.isEmpty()) {
@@ -201,10 +229,30 @@ public class IngestOfficial {
             }
             total = Integer.parseInt(num(json, "total"));
             rows.addAll(page1);
-            sleep(500);                                // stay under the WAF rate limit
+            if (hit) {
+                cached++;
+            } else {
+                sleep(PACE_MS);                        // stay under the WAF rate limit
+            }
         }
-        System.out.println("dept " + dept + ": listed " + rows.size() + " of " + total + " docs");
+        System.out.println("dept " + dept + ": listed " + rows.size() + " of " + total
+                + " docs" + (cached > 0 ? "（其中 " + cached + " 页来自缓存）" : ""));
         return rows;
+    }
+
+    /** 带磁盘缓存的 GET：命中缓存直接读盘，避免重复抓取与触发限流 */
+    private static String cachedGet(String cacheName, java.util.function.Supplier<String> fetch)
+            throws Exception {
+        Files.createDirectories(CACHE_DIR);
+        Path f = CACHE_DIR.resolve(cacheName);
+        if (Files.exists(f) && Files.size(f) > 0) {
+            return Files.readString(f, StandardCharsets.UTF_8);
+        }
+        String out = fetch.get();
+        if (out != null && !out.isBlank()) {
+            Files.writeString(f, out, StandardCharsets.UTF_8);
+        }
+        return out;
     }
 
     /** Split a listing response into per-row chunks (each chunk starts at its "bbbs"). */
@@ -224,13 +272,22 @@ public class IngestOfficial {
         return chunks;
     }
 
-    /** Match a whitelist title against the listing, keeping only the effective version (sxx=3). */
-    private static String findRow(List<String> rows, String lawName) {
-        String want = normTitle(lawName);
+    /**
+     * Match a whitelist entry against the listing, keeping only the effective version (sxx=3).
+     * <p>清单带 bbbs 时按文档号匹配（全量清单由生成器产出，标题可能被官方微调而漂移）；
+     * 否则退回按标题匹配（手工维护的小清单）。
+     */
+    private static String findRow(List<String> rows, LawSpec spec) {
+        String want = normTitle(spec.lawName());
         for (String row : rows) {
-            String title = normTitle(field(row, "title"));
-            String sxx = num(row, "sxx");
-            if (want.equals(title) && "3".equals(sxx)) {
+            if (!"3".equals(num(row, "sxx"))) {
+                continue;                              // 只取现行有效
+            }
+            if (spec.bbbs() != null) {
+                if (spec.bbbs().equals(field(row, "bbbs"))) {
+                    return row;
+                }
+            } else if (want.equals(normTitle(field(row, "title")))) {
                 return row;
             }
         }
@@ -249,9 +306,18 @@ public class IngestOfficial {
 
     // ---------------------------------------------------------------- docx
 
-    /** Download the official .docx and return its paragraphs as plain text. */
+    /** Download the official .docx and return its paragraphs as plain text（docx 落盘缓存，可续抓） */
     private static List<String> docxParagraphs(String bbbs) throws Exception {
-        byte[] zip = get(DOCX_URL + bbbs);
+        Files.createDirectories(CACHE_DIR);
+        Path cached = CACHE_DIR.resolve("docx-" + bbbs + ".zip");
+        byte[] zip;
+        if (Files.exists(cached) && Files.size(cached) > 1024) {
+            zip = Files.readAllBytes(cached);
+        } else {
+            zip = get(DOCX_URL + bbbs);
+            Files.write(cached, zip);
+            sleep(PACE_MS);                            // 每下一份都留间隔，别触发 WAF
+        }
         String xml = null;
         try (ZipInputStream zin = new ZipInputStream(new ByteArrayInputStream(zip))) {
             ZipEntry e;
