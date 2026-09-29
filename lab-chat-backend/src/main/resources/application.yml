@@ -49,8 +49,12 @@ spring:
         enabled: false
       # ★ embedding 走百炼 DashScope（OpenAI 兼容协议）：Token 套餐内无 embedding 模型，
       #   改用百炼控制台申请的普通 API-Key（有免费额度），与套餐 Key 是两套体系
-      # 注意：base-url 不带末尾的 /v1，Spring AI 会自动拼接
-      base-url: https://maas.qianwenaiapi.com/compatible-mode/v1
+      # ⚠ base-url 只能写到 /compatible-mode，**不能带末尾的 /v1**：
+      #   Spring AI 的 embeddings 路径自带 /v1/embeddings，带了就拼成
+      #   .../compatible-mode/v1/v1/embeddings → 404 且响应体为空。
+      #   线上「向量库同步失败: HTTP 404 - No response body available」的根因就是这个
+      #   （注释本来就写了这条约定，配置值当时违反了它）。
+      base-url: https://maas.qianwenaiapi.com/compatible-mode
       # ★ 在这里填入千问普通 API Key（也可通过环境变量 DASHSCOPE_API_KEY 注入，避免明文提交）
       api-key: ${DASHSCOPE_API_KEY:}
       # ★ 向量模型（千问 qwen3.7-text-embedding-flash，实测 1024 维；模型名大小写敏感，必须小写）
