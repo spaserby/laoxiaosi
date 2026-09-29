@@ -1,7 +1,36 @@
 # 劳小司 nginx 站点模板（nginx 官方镜像 envsubst 渲染 ${API_UPSTREAM}）
+#
+# ============ 域名口径（2026-09-29 起）============
+#   laoxiaosi.noctisblue.com   本应用（劳小司）的唯一规范地址，TLS 由 Let's Encrypt 提供
+#   noctisblue.com / www       HTTPS 301 跳子域名；顶级域名保留给"所有项目展示首页"，
+#                              以后做展示页时只需替换下面第 3 个 server 块的内容
+#   其它 Host（含直接用 IP 访问）HTTP 统一 301 到子域名 —— 证书只覆盖域名不含 IP，
+#                              这样旧 IP 链接不会撞上证书名不匹配的拦截页
+#
+# ⚠ 证书从宿主机目录只读挂载进容器：/etc/nginx/certs（acme.sh 安装，见 runbook）
+#   目录为空时 nginx 会启动失败（ssl_certificate 不存在），发布前先确认证书就位。
+
+# ---------- 1) HTTP：统一 301 到 HTTPS 规范域名 ----------
 server {
-    listen 80;
+    listen 80 default_server;
     server_name _;
+    return 301 https://laoxiaosi.noctisblue.com$request_uri;
+}
+
+# ---------- 2) HTTPS 主站：劳小司（子域名）----------
+server {
+    listen 443 ssl;
+    http2 on;
+    server_name laoxiaosi.noctisblue.com;
+
+    ssl_certificate     /etc/nginx/certs/noctisblue.crt;
+    ssl_certificate_key /etc/nginx/certs/noctisblue.key;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_session_cache   shared:SSL:10m;
+    ssl_session_timeout 1d;
+    # HSTS：让浏览器记住"只用 HTTPS"（1 年）。确认所有子域名都上 HTTPS 后再考虑 includeSubDomains
+    add_header Strict-Transport-Security "max-age=31536000" always;
+
     root /usr/share/nginx/html;
     index index.html;
 
@@ -39,4 +68,21 @@ server {
     location / {
         try_files $uri $uri/ /index.html;
     }
+}
+
+# ---------- 3) HTTPS 通用域名：暂跳子域名（未来展示首页在此替换）----------
+server {
+    listen 443 ssl;
+    http2 on;
+    server_name noctisblue.com www.noctisblue.com;
+
+    ssl_certificate     /etc/nginx/certs/noctisblue.crt;
+    ssl_certificate_key /etc/nginx/certs/noctisblue.key;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    add_header Strict-Transport-Security "max-age=31536000" always;
+
+    # 顶级域名目前没有独立内容：先整站跳到劳小司。
+    # 以后要做"项目展示首页"时，把下面这行 return 换成 root/index + location /
+    #（或把 DNS 指到另一台机器/另一个容器），其余不用动。
+    return 301 https://laoxiaosi.noctisblue.com$request_uri;
 }

@@ -72,10 +72,11 @@ echo "===== 4/4 等待就绪 → 验收探针 ====="
 # 容器 "Started" ≠ 应用可服务：Spring Boot 在 2C2G 上启动约 30s，
 # 容器起来就立刻探针必然 502（本脚本第一版就踩了，探针 4 项假失败）。
 # 这里轮询 /stats/home 直到返回 JSON（首字符 {）或超时 180s。
-BASE_URL=${PROBE_BASE:-http://127.0.0.1}
+BASE_URL=${PROBE_BASE:-https://127.0.0.1}
 ready=0
 for i in $(seq 1 60); do
-  first=$(curl -fsS -m 5 "$BASE_URL/stats/home" 2>/dev/null | head -c 1 || true)
+  # -k：用 IP 探测时证书名不匹配属预期（这里只判"应用是否起来了"）
+  first=$(curl -k -fsS -m 5 "$BASE_URL/stats/home" 2>/dev/null | head -c 1 || true)
   if [ "$first" = "{" ]; then
     ready=1
     echo "  后端就绪（等待约 $((i * 3)) 秒）"

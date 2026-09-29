@@ -28,8 +28,14 @@ services:
     restart: always
     environment:
       API_UPSTREAM: http://backend:8082
+    volumes:
+      # TLS 证书（acme.sh 签发后安装到此目录；容器内只读）。
+      # ⚠ 目录为空时 nginx 会因 ssl_certificate 不存在而启动失败——
+      #   首次部署先按 runbook「HTTPS 证书」完成签发再起容器。
+      - ./certs:/etc/nginx/certs:ro
     ports:
       # 若宿主机宝塔 nginx 占 80：改 8080:80 并由宝塔反代 8080，或停宝塔 nginx
       - "80:80"
+      - "443:443"
     depends_on:
       - backend

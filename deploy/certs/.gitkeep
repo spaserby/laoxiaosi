@@ -1,0 +1,3 @@
+# 证书目录占位：acme.sh 把证书安装到这里（noctisblue.crt / noctisblue.key）。
+# 证书本体与私钥不进仓库（见 .gitignore 的 deploy/certs/）。
+# ⚠ nginx 启动时若这两个文件不存在会直接失败——首次部署请先完成签发，见 runbook「HTTPS 证书」。
