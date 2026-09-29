@@ -109,8 +109,10 @@ legal:
           api-key: ${AI_API_KEY:}
           temperature: 0.7
         # 备用多模态端点：千问 compatible-mode（qwen-vl-max；切换时改 files.vl-model + vl-provider 两项）
+        # ⚠ 与其他 provider 同约定：base-url 不带末尾 /v1（ModelRegistry 用 OpenAiApi.builder().baseUrl()，
+        #   Spring AI 会拼 /v1/chat/completions；带 /v1 会拼成 /v1/v1/… 直接 404）
         vl:
-          base-url: https://maas.qianwenaiapi.com/compatible-mode/v1
+          base-url: https://maas.qianwenaiapi.com/compatible-mode
           api-key: ${DASHSCOPE_API_KEY:}
           temperature: 0.4
       routes:
