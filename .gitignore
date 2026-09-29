@@ -35,3 +35,7 @@ _待删除_开源清理/
 /.env
 deploy/.env
 *.dump
+
+# TLS 证书（acme.sh 安装产物，含私钥，绝不入库）
+deploy/certs/*
+!deploy/certs/.gitkeep

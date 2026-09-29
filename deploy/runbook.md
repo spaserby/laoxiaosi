@@ -102,6 +102,57 @@ git fetch origin && git branch --set-upstream-to=origin/main main
 > ⚠ 服务器到 GitHub 的 **HTTPS(443) 常被墙**，git 必须走 SSH（`git@github.com:...`），
 > 这也是 remote 用 SSH 地址的原因。
 
+## 5.6 HTTPS 证书（acme.sh + 阿里云 DNS 验证）
+
+**域名口径**：`laoxiaosi.noctisblue.com` 跑本应用（唯一规范地址）；`noctisblue.com` / `www`
+暂 301 跳到子域名——顶级域名留给以后的"项目展示首页"，将来只替换 nginx 模板里第 3 个
+server 块即可。HTTP（80）一律 301 到 HTTPS，包括用 IP 访问的旧链接。
+
+首次/重建（一次性）：
+
+```bash
+# 1) 装 acme.sh。GitHub 从国内服务器不通，可在本地 clone 后传上去；
+#    注意 Windows 侧 autocrlf 会把脚本转成 CRLF，上传后需去 CR：
+#    find . -type f -exec sed -i 's/\r$//' {} +
+./acme.sh --install --nocron
+# 2) DNS API 凭据（阿里云 RAM 用户，需 AliyunDNSFullAccess），只放 root 可读文件
+cat > /root/.ali_dns_keys <<'EOF'
+export Ali_Key="<AK>"
+export Ali_Secret="<SK>"
+EOF
+chmod 600 /root/.ali_dns_keys
+# 3) 签发：DNS 验证自动写 _acme-challenge TXT，不需要把 80 开放给 ACME
+. /root/.ali_dns_keys
+/root/.acme.sh/acme.sh --issue --dns dns_ali --dnssleep 30 --keylength ec-256 --server letsencrypt \
+  -d noctisblue.com -d www.noctisblue.com -d laoxiaosi.noctisblue.com
+# 4) 安装到容器挂载目录，并让续期后自动 reload nginx
+/root/.acme.sh/acme.sh --install-cert -d noctisblue.com --ecc \
+  --key-file       /opt/legal-assistant/deploy/certs/noctisblue.key \
+  --fullchain-file /opt/legal-assistant/deploy/certs/noctisblue.crt \
+  --reloadcmd      "docker exec lab-frontend nginx -s reload"
+# 5) 续期定时任务（每天 4 次检查；到期前 30 天才真正续）
+/root/.acme.sh/acme.sh --install-cronjob
+```
+
+**自动续期**：crontab `34 4,10,16,22 * * *` 跑 `acme.sh --cron`；DNS 凭据存在
+`/root/.acme.sh/account.conf`（600），续期后自动执行上面的 reloadcmd，无需人工。
+手动演练：`/root/.acme.sh/acme.sh --renew -d noctisblue.com --ecc --force`。
+
+**新增域名**：① DNS 加 A 记录（`python3 /root/ali_dns.py add noctisblue.com <rr> A <ip>`，
+控制台亦可）→ ② 重跑上面第 3、4 步（acme.sh 复用同一证书目录，install-cert 会刷新副本
+并触发 reload）。
+
+**验证**：
+
+```bash
+openssl s_client -connect laoxiaosi.noctisblue.com:443 -servername laoxiaosi.noctisblue.com \
+  </dev/null 2>/dev/null | openssl x509 -noout -subject -dates -ext subjectAltName
+curl -sI http://laoxiaosi.noctisblue.com | head -3        # 期望 301 → https
+```
+
+⚠ 两个前提：**ECS 安全组放行 443**；**证书目录不能为空**（`deploy/certs/` 缺 crt/key 时
+nginx 直接启动失败 → 容器起不来，先完成签发再 `up -d`）。
+
 ## 6. 回滚
 
 ```bash
