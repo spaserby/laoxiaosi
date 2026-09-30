@@ -194,12 +194,49 @@ function logout() {
 const syncing = ref(false)
 const syncLabel = ref('可全量，或按法条勾选增量同步')
 
-/* 勾选清单（法名 → 条数 / 已向量化条数） */
+/* 勾选清单（法名 → 条数 / 已向量化条数）+ 领域分组汇总 */
 const showScope = ref(false)
 const scope = ref({ rows: [], laws: 0, articles: 0, synced: 0 })
 const scopeTableRef = ref(null)
 const selectedLaws = ref([])
+const selectedCategories = ref([])
 const allSelected = ref(false)
+
+/** 按 category 汇总（与法条知识库页同一套领域口径），供"按大类同步"chips 使用 */
+const categoryChips = computed(() => {
+  const map = new Map()
+  for (const r of scope.value.rows) {
+    const name = r.category || '未分类'
+    const cur = map.get(name) || { name, laws: 0, cnt: 0, synced: 0 }
+    cur.laws++
+    cur.cnt += Number(r.cnt) || 0
+    cur.synced += Number(r.synced) || 0
+    map.set(name, cur)
+  }
+  return [...map.values()].sort((a, b) => b.cnt - a.cnt)
+})
+
+/** 已选范围的待同步条数（领域 + 单独勾选的法条，粗略去重） */
+const pendingArticles = computed(() => {
+  let n = 0
+  const cats = new Set(selectedCategories.value)
+  for (const c of selectedCategories.value) {
+    const chip = categoryChips.value.find((x) => x.name === c)
+    if (chip) n += chip.cnt
+  }
+  for (const r of scope.value.rows) {
+    if (selectedLaws.value.includes(r.lawName) && !cats.has(r.category)) {
+      n += Number(r.cnt) || 0
+    }
+  }
+  return n
+})
+
+function toggleCategory(name) {
+  const i = selectedCategories.value.indexOf(name)
+  if (i >= 0) selectedCategories.value.splice(i, 1)
+  else selectedCategories.value.push(name)
+}
 
 async function refreshSyncStatus() {
   try {
@@ -239,18 +276,25 @@ function toggleAll() {
   scope.value.rows.forEach((r) => scopeTableRef.value?.toggleRowSelection(r, allSelected.value))
 }
 
-/** laws 为空 = 全量同步；传入法名数组 = 只同步选中的法律 */
-async function onSync(laws) {
+/** laws = 单独勾选的法名；categories = 整组勾选的领域；两者都空 = 全量 */
+async function onSync(laws, categories) {
+  const pending = pendingArticles.value
+  // 内存保护：同步要把作用域内条文读进内存做指纹比对，1g 堆下单批别超 1.2 万条
+  if ((laws?.length || categories?.length) && pending > 12000) {
+    ElMessage.warning(`本批约 ${pending} 条，超过单批建议上限 1.2 万条——请取消一个领域或分批勾选`)
+    syncing.value = false
+    return
+  }
   syncing.value = true
   try {
-    const r = await syncVectors(laws)
+    const r = await syncVectors(laws, categories)
     if (!r.started) {
       ElMessage.warning(r.reason || '同步任务正在执行中')
       syncing.value = false
       return
     }
     showScope.value = false
-    ElMessage.success(`同步任务已启动（${laws?.length ? laws.length + ' 部法律' : '全量'}），完成后自动刷新状态`)
+    ElMessage.success(`同步任务已启动（${laws?.length || categories?.length ? '部分作用域' : '全量'}），完成后自动刷新状态`)
     syncLabel.value = '同步执行中…'
     const timer = setInterval(async () => {
       const s = await refreshSyncStatus()
@@ -393,6 +437,15 @@ async function onDelete(sessionId, title) {
         <span>共 {{ scope.laws }} 部法律 · {{ scope.articles }} 条，已向量化 {{ scope.synced }} 条</span>
         <el-button text size="small" @click="toggleAll">{{ allSelected ? '取消全选' : '全选' }}</el-button>
       </div>
+      <!-- 按领域整组勾选：点 chip 即把该领域整体纳入本批（后端按 category 过滤，免去逐个勾） -->
+      <div class="scope-cats">
+        <span v-for="c in categoryChips" :key="c.name" class="scope-cat"
+              :class="{ on: selectedCategories.includes(c.name) }"
+              :title="`已同步 ${c.synced} / ${c.cnt} 条，点击纳入/移出本批`"
+              @click="toggleCategory(c.name)">
+          {{ c.name }} · {{ c.cnt }}
+        </span>
+      </div>
       <el-table ref="scopeTableRef" :data="scope.rows" height="360" size="small" @selection-change="onScopeSelect">
         <el-table-column type="selection" width="42" />
         <el-table-column prop="lawName" label="法律名称" min-width="280" show-overflow-tooltip />
@@ -404,8 +457,10 @@ async function onDelete(sessionId, title) {
       </el-table>
       <template #footer>
         <el-button @click="showScope = false">取消</el-button>
-        <el-button type="primary" :loading="syncing" :disabled="!selectedLaws.length" @click="onSync(selectedLaws)">
-          同步选中 {{ selectedLaws.length }} 部
+        <el-button type="primary" :loading="syncing"
+                   :disabled="!selectedLaws.length && !selectedCategories.length"
+                   @click="onSync(selectedLaws, selectedCategories)">
+          同步选中（约 {{ pendingArticles }} 条）
         </el-button>
       </template>
     </el-dialog>
@@ -543,6 +598,15 @@ body.rail .gear-btn { display: none; }
   display: flex; justify-content: space-between; align-items: center;
   margin-bottom: 8px; font-size: 12px; color: var(--faint);
 }
+/* 领域 chips：整组勾选入口（与法条知识库页同一套领域口径） */
+.scope-cats { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+.scope-cat {
+  font-family: var(--mono); font-size: 10.5px; padding: 3px 8px;
+  border: 1px solid var(--line); color: var(--soft); cursor: pointer;
+  transition: all .25s var(--spring); user-select: none;
+}
+.scope-cat:hover { border-color: var(--acc); color: var(--acc); }
+.scope-cat.on { background: var(--acc); border-color: var(--acc); color: #fff; }
 .set-footer { display: flex; justify-content: flex-end; padding-top: 10px; }
 
 /* 头像选择 */

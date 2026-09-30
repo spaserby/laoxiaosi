@@ -37,8 +37,11 @@ export const setLawyerMode = (enabled) => http.put('/auth/lawyer-mode', { enable
 // 头像选择（登录用户永久保存：编号 1-12 存服务端）
 export const setAvatar = (avatar) => http.put('/auth/avatar', { avatar }).then((r) => r.data)
 // 管理端向量库同步（ADMIN only，403 由调用方提示）
-// laws 为空/缺省 = 全量同步；传入法名数组 = 只同步勾选的法律（未勾选的法条向量不受影响）
-export const syncVectors = (laws) => http.post('/admin/sync-vectors', laws?.length ? { laws } : {}).then((r) => r.data)
+// laws = 法名清单；categories = 业务领域清单（整组同步，免去传几百个法名）；两者都空 = 全量
+export const syncVectors = (laws, categories) =>
+  http.post('/admin/sync-vectors',
+    laws?.length || categories?.length ? { laws: laws || [], categories: categories || [] } : {}
+  ).then((r) => r.data)
 export const syncStatus = () => http.get('/admin/sync-status').then((r) => r.data)
 // 勾选清单：按法名汇总 条数 / 已向量化条数 / 业务领域 / 效力位阶
 export const syncScope = () => http.get('/admin/sync-scope').then((r) => r.data)
