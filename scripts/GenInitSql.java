@@ -26,12 +26,22 @@ public class GenInitSql {
         int rows = 0;
         StringBuilder data = new StringBuilder();
         try (Connection c = DriverManager.getConnection(
-                "jdbc:postgresql://127.0.0.1:5432/lab_legal_kb", "postgres", System.getenv().getOrDefault("PG_PASSWORD", ""));
+                // 连接信息全部走环境变量（PG_HOST/PG_PORT/PG_DB/PG_USER/PG_PASSWORD），
+                // 这样本工具也能在服务器上对着 RDS 生成种子
+                "jdbc:postgresql://" + System.getenv().getOrDefault("PG_HOST", "127.0.0.1")
+                        + ":" + System.getenv().getOrDefault("PG_PORT", "5432")
+                        + "/" + System.getenv().getOrDefault("PG_DB", "lab_legal_kb"),
+                System.getenv().getOrDefault("PG_USER", "postgres"),
+                System.getenv().getOrDefault("PG_PASSWORD", ""));
              Statement st = c.createStatement();
              ResultSet rs = st.executeQuery("""
                      select id, law_name, article_no, category, doc_type, title, version_info,
                             chapter_info, section_info, content, deleted
-                     from law_article order by id""")) {
+                     from law_article
+                     -- 开源种子口径：只随仓库分发劳动域核心样本（全量底账 5 万+条不入库，
+                     -- 由 scripts/IngestOfficial.java + ingest-laws-full.tsv 从官方源重建）
+                     where deleted = 0 and category = '劳动'
+                     order by id""")) {
             while (rs.next()) {
                 data.append("INSERT INTO law_article (id, law_name, article_no, category, doc_type, title, version_info, chapter_info, section_info, content, deleted) VALUES (")
                         .append(rs.getLong("id")).append(", ")
