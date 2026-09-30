@@ -20,6 +20,10 @@ public interface LawArticleMapper {
     @Select("select * from law_article where deleted = 0 order by id")
     List<LawArticleEntity> findAllActive();
 
+    /** 全部有效条文的 id（自动分批的作用域解析用——只取 id，几万条也轻） */
+    @Select("select id from law_article where deleted = 0")
+    List<Long> findAllActiveIds();
+
     /** 指定法名的有效条文（勾选同步的作用域） */
     @Select({"<script>",
             "select * from law_article where deleted = 0 and law_name in",

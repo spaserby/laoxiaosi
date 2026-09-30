@@ -19,6 +19,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.Collections;
 import java.util.stream.Collectors;
 
 /**
@@ -62,6 +63,13 @@ public class KnowledgeImportService {
     /** 向量文档 ID 前缀：law:article:{id}，确定性 ID 是增量同步的前提 */
     private static final String DOC_ID_PREFIX = "law:article:";
 
+    /**
+     * 自动分批的单批条文数：指纹比对要把作用域条文读进内存做 diff，
+     * 全量 5 万+条一次进来在 {@code -Xmx1g} 下会 OOM，故按批切分顺序跑。
+     * 可用系统属性 {@code -Dlegal.sync.auto-batch=} 覆盖。
+     */
+    static final int AUTO_BATCH = Integer.getInteger("legal.sync.auto-batch", 10_000);
+
     private final VectorStore vectorStore;
     private final RedissonClient redissonClient;
     private final RagProperties ragProperties;
@@ -104,7 +112,7 @@ public class KnowledgeImportService {
      * @return null = 成功；非 null = 错误信息
      */
     public String syncLedgerToVector() {
-        return syncLedgerToVector(null);
+        return syncLedgerToVector(null, null);
     }
 
     /**
@@ -118,7 +126,12 @@ public class KnowledgeImportService {
     }
 
     /**
-     * 增量同步管道（可按法名/领域勾选作用域）：PG 底账 → 向量库（新增/变更/删除三态）
+     * 增量同步管道（可按法名/领域勾选作用域，超大规模自动分批）：PG 底账 → 向量库
+     * <p>
+     * <b>自动分批</b>：指纹比对要把作用域条文读进内存，全量 5 万+条一次进来在
+     * {@code -Xmx1g} 下会 OOM。这里把作用域解析成<b>轻量 id 清单</b>（几万个 id
+     * 才零点几 MB），按 {@link #AUTO_BATCH} 切成小批顺序跑——内存峰值只跟单批相关；
+     * 每批独立 diff/checkpoint，任一批失败即停（重跑从 ledger 断点续传）。
      *
      * @param lawNames   只同步这些法律；null/空 = 不按法名过滤
      * @param categories 只同步这些业务领域；与 lawNames 取并集
@@ -127,23 +140,51 @@ public class KnowledgeImportService {
     public String syncLedgerToVector(List<String> lawNames, List<String> categories) {
         boolean hasLaws = lawNames != null && !lawNames.isEmpty();
         boolean hasCats = categories != null && !categories.isEmpty();
-        boolean scoped = hasLaws || hasCats;
-        // 作用域统一解析为 id 集合（法名 ∪ 领域），后续加载与"删除回收"都以它为准
-        java.util.Set<Long> scopeIds = scoped ? new java.util.HashSet<>() : null;
+        // 作用域解析为轻量 id 清单（法名 ∪ 领域；全量 = 全部有效条文 id）
+        java.util.Set<Long> unique = new java.util.LinkedHashSet<>();
         if (hasLaws) {
-            scopeIds.addAll(lawArticleMapper.findIdsByLawNames(lawNames));
+            unique.addAll(lawArticleMapper.findIdsByLawNames(lawNames));
         }
         if (hasCats) {
-            scopeIds.addAll(lawArticleMapper.findIdsByCategories(categories));
+            unique.addAll(lawArticleMapper.findIdsByCategories(categories));
         }
+        if (!hasLaws && !hasCats) {
+            unique.addAll(lawArticleMapper.findAllActiveIds());
+        }
+        if (unique.isEmpty()) {
+            log.info("作用域内无有效条文，跳过向量化");
+            return null;
+        }
+        List<Long> scopeIds = new ArrayList<>(unique);
+        java.util.Collections.sort(scopeIds);
+
+        int total = scopeIds.size();
+        int batches = (total + AUTO_BATCH - 1) / AUTO_BATCH;
+        if (batches > 1) {
+            log.info("作用域 {} 条，自动分 {} 批（每批 ≤ {} 条）顺序同步", total, batches, AUTO_BATCH);
+        }
+        int done = 0;
+        for (int i = 0; i < batches; i++) {
+            List<Long> chunk = scopeIds.subList(i * AUTO_BATCH, Math.min((i + 1) * AUTO_BATCH, total));
+            String err = syncScopeIds(chunk, done, total,
+                    batches > 1 ? ("第 " + (i + 1) + "/" + batches + " 批") : "单批");
+            if (err != null) {
+                // 任一批失败即停：已完成的批次指纹已落库，重跑自动从断点续传
+                return err + "（已完成 " + done + "/" + total + " 条，重跑自动续传）";
+            }
+            done += chunk.size();
+        }
+        return null;
+    }
+
+    /**
+     * 同步一组条文 id：加载 → 指纹 diff → 回收过期向量 → 分批 embedding + checkpoint。
+     * {@code doneBase}/{@code grandTotal} 用于跨批累加的进度上报。
+     */
+    private String syncScopeIds(List<Long> ids, int doneBase, int grandTotal, String batchDesc) {
         try {
-            // 1. 从 PG 底账读取有效条文（deleted=0）；勾选同步时限定在作用域内
-            List<LawArticleEntity> articles = scoped
-                    ? lawArticleMapper.findAllByIds(new ArrayList<>(scopeIds))
-                    : lawArticleMapper.findAllActive();
-            log.info("PG 底账扫描完成, 有效条文数={}, 作用域={}", articles.size(),
-                    scoped ? ("laws=" + (hasLaws ? lawNames.size() : 0)
-                            + " categories=" + (hasCats ? categories.size() : 0)) : "全量");
+            List<LawArticleEntity> articles = lawArticleMapper.findAllByIds(ids);
+            log.info("知识库同步[{}]: 本批 {} 条", batchDesc, articles.size());
 
             // 2. 读取指纹底账（PG rag_ledger：多实例共享 + 持久化，Redis flush 不再导致全量重嵌）
             Map<String, String> oldHashes = new HashMap<>();
@@ -172,12 +213,9 @@ public class KnowledgeImportService {
                 }
             }
             Set<String> toDelete = new HashSet<>(oldHashes.keySet());
-            if (scoped) {
-                // ★ 删除回收必须限定在同一作用域内：否则未勾选法条的指纹不在 newHashes 里，
-                //   会被判成"底账已删"而整体回收掉向量（勾选同步最危险的坑）
-                toDelete.retainAll(scopeIds.stream()
-                        .map(String::valueOf).collect(Collectors.toSet()));
-            }
+            // ★ 删除回收限定在本批 id 内：指纹底账是全量的，只回收本批范围内
+            //   "底账已删/逻辑删"的向量——其他批次的内容不在本批差集里，不能动
+            toDelete.retainAll(ids.stream().map(String::valueOf).collect(Collectors.toSet()));
             toDelete.removeAll(newHashes.keySet());   // 底账有、PG 已删/逻辑删 → 回收向量
 
             // 4. 执行同步：先回收删除的，再分批写入新增/变更的
@@ -191,7 +229,9 @@ public class KnowledgeImportService {
             // 分批续传：buffer 满 BATCH 即写 embedding + 落 ledger checkpoint（条文粒度），
             // 中断后重点时已 checkpoint 条文 MD5 命中自动跳过——断点即 ledger
             Map<Object, Object> progress = redissonClient.getMap(PROGRESS_KEY);
-            progress.putAll(Map.of("processed", "0", "total", String.valueOf(pending.size())));
+            // 跨批累加的进度：total = 作用域全部条数（固定），processed = 前几批 + 本批
+            progress.put("total", String.valueOf(grandTotal));
+            progress.put("processed", String.valueOf(doneBase));
             int processed = 0;
             List<Document> buffer = new ArrayList<>();
             List<RagLedgerMapper.LedgerRow> checkpoint = new ArrayList<>();
@@ -204,8 +244,8 @@ public class KnowledgeImportService {
                     ledgerMapper.upsertAll(new ArrayList<>(checkpoint));
                     processed += checkpoint.size();
                     checkpoint.clear();
-                    progress.put("processed", String.valueOf(processed));
-                    log.info("知识库同步: 续传进度 {}/{} 条", processed, pending.size());
+                    progress.put("processed", String.valueOf(doneBase + processed));
+                    log.info("知识库同步[{}]: 进度 {}/{} 条", batchDesc, doneBase + processed, grandTotal);
                 }
             }
             if (!buffer.isEmpty()) {
