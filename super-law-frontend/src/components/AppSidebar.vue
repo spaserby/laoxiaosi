@@ -284,6 +284,11 @@ function toggleAll() {
 
 /** laws = 勾选的法名清单；空 = 全量。chips 已在打开时驱动表格勾选，这里只收法名 */
 async function onSync(laws) {
+  // 内存保护：同步要把作用域内条文读进内存做指纹比对，1g 堆下单批别超 1.2 万条
+  if (laws?.length && pendingArticles.value > 12000) {
+    ElMessage.warning(`本批约 ${pendingArticles.value} 条，超过单批建议上限 1.2 万条——请用领域 chip 分批勾选`)
+    return
+  }
   syncing.value = true
   try {
     const r = await syncVectors(laws)
