@@ -199,10 +199,9 @@ const showScope = ref(false)
 const scope = ref({ rows: [], laws: 0, articles: 0, synced: 0 })
 const scopeTableRef = ref(null)
 const selectedLaws = ref([])
-const selectedCategories = ref([])
 const allSelected = ref(false)
 
-/** 按 category 汇总（与法条知识库页同一套领域口径），供"按大类同步"chips 使用 */
+/** 按 category 汇总（与法条知识库页同一套领域口径）；chips 是表格勾选的批量快捷方式 */
 const categoryChips = computed(() => {
   const map = new Map()
   for (const r of scope.value.rows) {
@@ -216,26 +215,33 @@ const categoryChips = computed(() => {
   return [...map.values()].sort((a, b) => b.cnt - a.cnt)
 })
 
-/** 已选范围的待同步条数（领域 + 单独勾选的法条，粗略去重） */
+/** 某领域是否整组已选（该领域全部法条都在勾选清单里）——chip 高亮由此推导 */
+function isCategoryOn(name) {
+  const rows = scope.value.rows.filter((r) => (r.category || '未分类') === name)
+  return rows.length > 0 && rows.every((r) => selectedLaws.value.includes(r.lawName))
+}
+
+/** 待同步条数 = 勾选法条的条数合计（单一事实源：表格勾选） */
 const pendingArticles = computed(() => {
+  const chosen = new Set(selectedLaws.value)
   let n = 0
-  const cats = new Set(selectedCategories.value)
-  for (const c of selectedCategories.value) {
-    const chip = categoryChips.value.find((x) => x.name === c)
-    if (chip) n += chip.cnt
-  }
   for (const r of scope.value.rows) {
-    if (selectedLaws.value.includes(r.lawName) && !cats.has(r.category)) {
-      n += Number(r.cnt) || 0
-    }
+    if (chosen.has(r.lawName)) n += Number(r.cnt) || 0
   }
   return n
 })
 
+/**
+ * chip 点击 = 整组勾选/取消该领域。
+ * 直接驱动表格勾选（toggleRowSelection → selection-change → selectedLaws），
+ * 而不是另设一条"领域选择"通道——两条通道会让"点了上面、下面没反应"。
+ */
 function toggleCategory(name) {
-  const i = selectedCategories.value.indexOf(name)
-  if (i >= 0) selectedCategories.value.splice(i, 1)
-  else selectedCategories.value.push(name)
+  const rows = scope.value.rows.filter((r) => (r.category || '未分类') === name)
+  const allOn = rows.length > 0 && rows.every((r) => selectedLaws.value.includes(r.lawName))
+  for (const r of rows) {
+    scopeTableRef.value?.toggleRowSelection(r, !allOn)
+  }
 }
 
 async function refreshSyncStatus() {
@@ -276,25 +282,18 @@ function toggleAll() {
   scope.value.rows.forEach((r) => scopeTableRef.value?.toggleRowSelection(r, allSelected.value))
 }
 
-/** laws = 单独勾选的法名；categories = 整组勾选的领域；两者都空 = 全量 */
-async function onSync(laws, categories) {
-  const pending = pendingArticles.value
-  // 内存保护：同步要把作用域内条文读进内存做指纹比对，1g 堆下单批别超 1.2 万条
-  if ((laws?.length || categories?.length) && pending > 12000) {
-    ElMessage.warning(`本批约 ${pending} 条，超过单批建议上限 1.2 万条——请取消一个领域或分批勾选`)
-    syncing.value = false
-    return
-  }
+/** laws = 勾选的法名清单；空 = 全量。chips 已在打开时驱动表格勾选，这里只收法名 */
+async function onSync(laws) {
   syncing.value = true
   try {
-    const r = await syncVectors(laws, categories)
+    const r = await syncVectors(laws)
     if (!r.started) {
       ElMessage.warning(r.reason || '同步任务正在执行中')
       syncing.value = false
       return
     }
     showScope.value = false
-    ElMessage.success(`同步任务已启动（${laws?.length || categories?.length ? '部分作用域' : '全量'}），完成后自动刷新状态`)
+    ElMessage.success(`同步任务已启动（${laws?.length ? laws.length + ' 部法律' : '全量'}），完成后自动刷新状态`)
     syncLabel.value = '同步执行中…'
     const timer = setInterval(async () => {
       const s = await refreshSyncStatus()
@@ -440,7 +439,7 @@ async function onDelete(sessionId, title) {
       <!-- 按领域整组勾选：点 chip 即把该领域整体纳入本批（后端按 category 过滤，免去逐个勾） -->
       <div class="scope-cats">
         <span v-for="c in categoryChips" :key="c.name" class="scope-cat"
-              :class="{ on: selectedCategories.includes(c.name) }"
+              :class="{ on: isCategoryOn(c.name) }"
               :title="`已同步 ${c.synced} / ${c.cnt} 条，点击纳入/移出本批`"
               @click="toggleCategory(c.name)">
           {{ c.name }} · {{ c.cnt }}
@@ -458,8 +457,8 @@ async function onDelete(sessionId, title) {
       <template #footer>
         <el-button @click="showScope = false">取消</el-button>
         <el-button type="primary" :loading="syncing"
-                   :disabled="!selectedLaws.length && !selectedCategories.length"
-                   @click="onSync(selectedLaws, selectedCategories)">
+                   :disabled="!selectedLaws.length"
+                   @click="onSync(selectedLaws)">
           同步选中（约 {{ pendingArticles }} 条）
         </el-button>
       </template>
