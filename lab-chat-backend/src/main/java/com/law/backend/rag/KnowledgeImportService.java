@@ -114,14 +114,36 @@ public class KnowledgeImportService {
      * @return null = 成功；非 null = 错误信息
      */
     public String syncLedgerToVector(List<String> lawNames) {
-        boolean scoped = lawNames != null && !lawNames.isEmpty();
+        return syncLedgerToVector(lawNames, null);
+    }
+
+    /**
+     * 增量同步管道（可按法名/领域勾选作用域）：PG 底账 → 向量库（新增/变更/删除三态）
+     *
+     * @param lawNames   只同步这些法律；null/空 = 不按法名过滤
+     * @param categories 只同步这些业务领域；与 lawNames 取并集
+     * @return null = 成功；非 null = 错误信息
+     */
+    public String syncLedgerToVector(List<String> lawNames, List<String> categories) {
+        boolean hasLaws = lawNames != null && !lawNames.isEmpty();
+        boolean hasCats = categories != null && !categories.isEmpty();
+        boolean scoped = hasLaws || hasCats;
+        // 作用域统一解析为 id 集合（法名 ∪ 领域），后续加载与"删除回收"都以它为准
+        java.util.Set<Long> scopeIds = scoped ? new java.util.HashSet<>() : null;
+        if (hasLaws) {
+            scopeIds.addAll(lawArticleMapper.findIdsByLawNames(lawNames));
+        }
+        if (hasCats) {
+            scopeIds.addAll(lawArticleMapper.findIdsByCategories(categories));
+        }
         try {
-            // 1. 从 PG 底账读取有效条文（deleted=0）；勾选同步时限定在所选法名内
+            // 1. 从 PG 底账读取有效条文（deleted=0）；勾选同步时限定在作用域内
             List<LawArticleEntity> articles = scoped
-                    ? lawArticleMapper.findAllActiveByLawNames(lawNames)
+                    ? lawArticleMapper.findAllByIds(new ArrayList<>(scopeIds))
                     : lawArticleMapper.findAllActive();
             log.info("PG 底账扫描完成, 有效条文数={}, 作用域={}", articles.size(),
-                    scoped ? lawNames.size() + " 部法律" : "全量");
+                    scoped ? ("laws=" + (hasLaws ? lawNames.size() : 0)
+                            + " categories=" + (hasCats ? categories.size() : 0)) : "全量");
 
             // 2. 读取指纹底账（PG rag_ledger：多实例共享 + 持久化，Redis flush 不再导致全量重嵌）
             Map<String, String> oldHashes = new HashMap<>();
@@ -153,8 +175,8 @@ public class KnowledgeImportService {
             if (scoped) {
                 // ★ 删除回收必须限定在同一作用域内：否则未勾选法条的指纹不在 newHashes 里，
                 //   会被判成"底账已删"而整体回收掉向量（勾选同步最危险的坑）
-                toDelete.retainAll(lawArticleMapper.findIdsByLawNames(lawNames)
-                        .stream().map(String::valueOf).collect(Collectors.toSet()));
+                toDelete.retainAll(scopeIds.stream()
+                        .map(String::valueOf).collect(Collectors.toSet()));
             }
             toDelete.removeAll(newHashes.keySet());   // 底账有、PG 已删/逻辑删 → 回收向量
 

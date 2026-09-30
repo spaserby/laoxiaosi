@@ -56,14 +56,9 @@ public class AdminController {
      */
     @PostMapping("/sync-vectors")
     public Map<String, Object> syncVectors(@RequestBody(required = false) Map<String, Object> body) {
-        List<String> laws = new ArrayList<>();
-        if (body != null && body.get("laws") instanceof List<?> list) {
-            for (Object o : list) {
-                if (o != null && !String.valueOf(o).isBlank()) {
-                    laws.add(String.valueOf(o));
-                }
-            }
-        }
+        List<String> laws = stringList(body, "laws");
+        List<String> categories = stringList(body, "categories");
+        String scopeDesc = describeScope(laws, categories);
         var running = redissonClient.getBucket(KEY_RUNNING);
         if (!running.trySet("1", RUNNING_TTL.toMinutes(), java.util.concurrent.TimeUnit.MINUTES)) {
             return Map.of("started", false, "reason", "同步任务正在执行中，请稍后再试");
@@ -72,19 +67,48 @@ public class AdminController {
         Mono.fromRunnable(() -> {
             String error = null;
             try {
-                error = importService.syncLedgerToVector(laws.isEmpty() ? null : laws);
+                error = importService.syncLedgerToVector(
+                        laws.isEmpty() ? null : laws, categories.isEmpty() ? null : categories);
             } catch (Exception e) {
                 error = e.getMessage();
             }
             redissonClient.getMap(KEY_STATE).putAll(Map.of(
                     "lastResult", error == null ? "成功" : ("失败: " + error),
-                    "lastScope", laws.isEmpty() ? "全量" : (laws.size() + " 部法律"),
+                    "lastScope", scopeDesc,
                     "lastSyncAt", String.valueOf(System.currentTimeMillis())));
             running.delete();
-            log.info("管理端手动同步结束: scope={}, result={}", laws.isEmpty() ? "全量" : laws.size() + " 部",
+            log.info("管理端手动同步结束: scope={}, result={}", scopeDesc,
                     error == null ? "成功" : error);
         }).subscribeOn(Schedulers.boundedElastic()).subscribe();
-        return Map.of("started", true, "laws", laws.size());
+        return Map.of("started", true, "laws", laws.size(), "categories", categories.size());
+    }
+
+    /** 从请求体读取字符串数组（laws / categories 共用），空元素与空白剔除 */
+    private List<String> stringList(Map<String, Object> body, String key) {
+        List<String> out = new ArrayList<>();
+        if (body != null && body.get(key) instanceof List<?> list) {
+            for (Object o : list) {
+                if (o != null && !String.valueOf(o).isBlank()) {
+                    out.add(String.valueOf(o));
+                }
+            }
+        }
+        return out;
+    }
+
+    /** 作用域描述（日志与前端展示用）：全量 / 领域[…] + N 部法律 */
+    private String describeScope(List<String> laws, List<String> categories) {
+        if (laws.isEmpty() && categories.isEmpty()) {
+            return "全量";
+        }
+        List<String> parts = new ArrayList<>();
+        if (!categories.isEmpty()) {
+            parts.add("领域[" + String.join(",", categories) + "]");
+        }
+        if (!laws.isEmpty()) {
+            parts.add(laws.size() + " 部法律");
+        }
+        return String.join(" + ", parts);
     }
 
     /**

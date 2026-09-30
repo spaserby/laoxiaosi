@@ -35,6 +35,13 @@ public interface LawArticleMapper {
             "</script>"})
     List<Long> findIdsByLawNames(@Param("lawNames") List<String> lawNames);
 
+    /** 指定领域（category）的有效条文 id —— 整组同步用，免去前端传几百个法名 */
+    @Select({"<script>",
+            "select id from law_article where deleted = 0 and category in",
+            "<foreach collection='categories' item='c' open='(' separator=',' close=')'>#{c}</foreach>",
+            "</script>"})
+    List<Long> findIdsByCategories(@Param("categories") List<String> categories);
+
     /**
      * 同步清单（管理端勾选界面）：按法名汇总条数与已向量化条数。
      * article_id 在 rag_ledger 中是 VARCHAR，需把 BIGINT 的 id 转文本再关联。
