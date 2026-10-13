@@ -15,7 +15,9 @@ package com.law.backend.rag;
  * @param lawName    法律名称，如《中华人民共和国劳动合同法》
  * @param articleNo  条文编号，如第四十七条
  * @param category   分类（民事/劳动/刑事...）
- * @param score      向量相似度（COSINE，越高越相关；BM25 路为 0）
+ * @param score      相关度分，随流水线阶段改写：稠密路为向量余弦相似度（越高越相关）、
+ *                   稀疏 BM25 路占位 0、经 RRF 融合后由精排覆盖为 Cross-Encoder relevance
+ *                   ——前端"相关度"展示的是精排分，绝对数值偏小属该模型常态，看排序不看绝对值
  * @param text       条文文本（chunk 命中时为子块文本，Small-to-Big 还原后为整条）
  * @param chunked    是否长条文子块命中（true 时需按 articleId 还原整条全文）
  */
