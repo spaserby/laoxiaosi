@@ -149,7 +149,10 @@ const today = (() => {
   .crop { display: none; }
 }
 @media (max-width: 860px) {
-  .page-scroll { padding: 14px 0 160px; }
+  .page-scroll { padding: 0 0 160px; }
+  /* 报头贴顶：首行右移让位于固定汉堡按钮（40px + 12px 边距；sheet 自身另有 34px 内边距） */
+  .runhead { padding: 24px 0 12px; }
+  .rh-top { padding-left: 24px; }
   .sheet { border-left: none; border-right: none; }
   .vertical { display: none; }
   .rh-top span:nth-child(2) { display: none; }

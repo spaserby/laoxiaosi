@@ -114,16 +114,17 @@ body.rail .app-main { margin-left: var(--sw-rail); }
 
 @media (max-width: 860px) {
   /* 汉堡按钮：与品牌标同款的纸方 + 墨线（App.vue 挂载，位于 app-shell 内与抽屉同层叠上下文）
-     translateZ(0) 强制独立合成层，缓解个别 in-app 浏览器 fixed 不跟滚的抖动 */
+     保持最保守的 fixed 形态：不加 backdrop-filter / transform——iOS 与微信内置 WebView
+     对带毛玻璃（backdrop-filter）或位移层（translateZ）的 fixed 元素有"退化成随页滚动"的
+     已知渲染怪癖（症状：下滑按钮消失、上滑又出现），纯 fixed + 实底最稳 */
   .menu-btn {
     display: grid; place-items: center;
-    position: fixed; top: 14px; left: 14px; z-index: 55;
+    position: fixed; top: 12px; left: 12px; z-index: 55;
     width: 40px; height: 40px;
-    background: rgba(255, 255, 255, .94); border: 1px solid var(--line-ink); color: var(--ink);
-    backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
-    transform: translateZ(0);
+    background: #fff; border: 1px solid var(--line-ink); color: var(--ink);
+    box-shadow: 0 2px 10px rgba(22, 25, 31, .10);
   }
-  .menu-btn:active { transform: scale(.94); }
+  .menu-btn:active { background: #F2F3F5; }
 
   /* 抽屉遮罩（与抽屉同处 app-shell 层叠上下文：58 < 抽屉60，故抽屉在遮罩之上可点） */
   .drawer-mask {
@@ -165,9 +166,9 @@ body.rail .app-main { margin-left: var(--sw-rail); }
   /* Element Plus 对话框小屏防溢出（设置框固定 400px 宽于 375px 屏） */
   .el-dialog { width: min(92vw, 400px) !important; }
 
-  /* 页面顶部给汉堡按钮留位（内容页页眉左对齐处不与之碰撞） */
-  .page-scroll { padding-top: 64px !important; }
-  .tools-page, .lib-page { padding-top: 64px !important; }
+  /* 内容贴顶：不再为汉堡预留 64px 空带（按钮浮在纸面上，首页报头首行右移让位，见 ChatView） */
+  .page-scroll { padding-top: 0 !important; }
+  .tools-page, .lib-page { padding-top: 56px !important; }
 
   /* 触控目标加大（≥40px）；发送按钮收为图标把宽度让给输入框 */
   .send-btn { height: 44px !important; padding: 0 12px !important; }
