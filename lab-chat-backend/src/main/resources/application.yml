@@ -70,9 +70,16 @@ spring:
   #   ① DROP TABLE vector_store;  ② DELETE FROM rag_ledger;（不清指纹同步会判"无变更"不重嵌）
   #   ③ 重启后端按新配置重建表；  ④ 管理端点一次同步全量重嵌。
   #   （仅换 embedding 模型名无需此流程：指纹含模型名盐，点同步即自动全量重建）
+  # ★ 2026-10-13 已置 false（重要）：阿里云 RDS 的 pgvector 分叉把余弦 HNSW 索引实现为
+  #   rds_vector_cosine_ops，该实现在本实例上失效——ANN 返回的是错误邻居（连"向量找自己"
+  #   都找不到，Top 相似度只有 ~0.35），导致强制检索打底 0 命中、引用卡退化为正则兜底。
+  #   initialize-schema: true 会在每次启动重建这个坏索引，故关闭并改走精确扫描
+  #   （56k 向量 ≈ 128ms，可接受）。建表 DDL 已移入 scripts/pg-schema.sql（随 db/init.sql 建库）。
+  #   日后 RDS 修复/换实例后：置回 true（或手工建 vector_cosine_ops 索引并验证"向量找自己"），
+  #   再删除 scripts/pg-schema.sql 中对应说明。
     vectorstore:
       pgvector:
-        initialize-schema: true
+        initialize-schema: false
         dimensions: 1024
         index-type: hnsw
         distance-type: COSINE_DISTANCE

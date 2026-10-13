@@ -554,11 +554,14 @@ public class ChatService {
             for (int i = 0; i < cites.size(); i++) {
                 numbered.append('[').append(i + 1).append("] ").append(cites.get(i).text()).append('\n');
             }
-            log.info("强制检索打底命中: route={}, 命中={} 条, category={}", route, cites.size(), category);
+            log.info("强制检索打底命中: route={}, 命中={} 条, category={}, query={}",
+                    route, cites.size(), category, plan.primaryQuery());
             return new GroundedResult(identityBlock() + BASE_PERSONA
                     + "\n\n【已检索到的法律条文（回答以此为依据，用 [n] 角标注明出处）】\n" + numbered
                     + GROUNDED_RULE + TOOL_RULE + WEB_RULE + CALC_RULE + suffix, cites);
         }
+        // 落空必须留痕：此前只在命中时打日志，导致"打底静默失效"长期无人发现（2026-10-13 索引事故）
+        log.info("强制检索打底落空: route={}, category={}, query={}", route, category, plan.primaryQuery());
         // 检索落空+ 高风险预测类问题 → 追加拒臆测提示
         if (safetyGuard.isHighRisk(userMessage)) {
             log.info("高风险问题检索落空，追加咨询律师提示: message 长度={}", userMessage.length());

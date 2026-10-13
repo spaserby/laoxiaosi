@@ -1,10 +1,24 @@
 -- ============================================================
--- PostgreSQL 全量底账 schema（底账 + 记忆 + 同步指纹）
--- 向量表 vector_store 由 Spring AI PgVectorStore initialize-schema 自动创建
+-- PostgreSQL 全量底账 schema（底账 + 记忆 + 同步指纹 + 向量表）
+-- 向量表 vector_store 在此一并创建（后端 initialize-schema 已关闭：
+--   阿里云 RDS 的 pgvector 分叉余弦 HNSW 索引在本实例失效，改走精确扫描，
+--   详见 lab-chat-backend/src/main/resources/application.yml 中 vectorstore 段注释）
 -- 执行：psql -U postgres -d lab_legal_kb -f pg-schema.sql
 -- ============================================================
 CREATE EXTENSION IF NOT EXISTS vector;
 CREATE EXTENSION IF NOT EXISTS pg_trgm;
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";   -- vector_store.id 的 uuid_generate_v4() 依赖
+
+-- 向量表：列结构与 Spring AI PgVectorStore 的 DDL 保持一致（initialize-schema: true 时的产物）
+-- 注意：此处刻意不建 HNSW 索引（见头部说明）；日后 RDS 修复后可手工建：
+--   CREATE INDEX spring_ai_vector_index ON vector_store USING hnsw (embedding vector_cosine_ops);
+-- 建后务必验证"向量找自己"：同一条目的 embedding 检索 Top-1 应是自己、相似度 ≈1.000。
+CREATE TABLE IF NOT EXISTS vector_store (
+  id        uuid DEFAULT uuid_generate_v4() PRIMARY KEY,
+  content   text,
+  metadata  json,
+  embedding vector(1024)
+);
 
 -- ★ 历史库升级补列：CREATE TABLE IF NOT EXISTS 对已存在的表是空操作，
 --   老库不会自动长出后加的列（doc_type / owner_key），必须显式 ALTER 兜底，

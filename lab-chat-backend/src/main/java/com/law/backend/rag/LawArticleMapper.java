@@ -118,11 +118,16 @@ public interface LawArticleMapper {
 
     /**
      * 稀疏路关键词检索：trgm GIN 加速 ILIKE 候选，
-     * similarity 相似度排序补"第四十七条"这类离散编号的召回短板
+     * similarity 相似度排序补"第四十七条"这类离散编号的召回短板。
+     * <p>
+     * 2026-10-13：查询串按空白与常见顿号/逗号/分号切词后"任一命中即召回"——
+     * 此前整串 ILIKE 对多词查询（如"解除劳动合同 经济补偿"或整句问话）恒为 0 命中，
+     * 属静默召回损失；单词查询行为与旧版一致。
      */
-    @Select("select * from law_article where deleted = 0"
-            + " and (content ilike '%' || #{kw} || '%' or law_name ilike '%' || #{kw} || '%'"
-            + "      or article_no ilike '%' || #{kw} || '%')"
-            + " order by similarity(content, #{kw}) desc limit #{limit}")
+    @Select("with terms as (select unnest(regexp_split_to_array(#{kw}, '[\\s、，,；;：:]+')) as t)"
+            + " select * from law_article a where a.deleted = 0 and exists ("
+            + "   select 1 from terms where t <> '' and (a.content ilike '%' || t || '%'"
+            + "     or a.law_name ilike '%' || t || '%' or a.article_no ilike '%' || t || '%'))"
+            + " order by similarity(a.content, #{kw}) desc limit #{limit}")
     List<LawArticleEntity> keywordSearch(@Param("kw") String kw, @Param("limit") int limit);
 }
