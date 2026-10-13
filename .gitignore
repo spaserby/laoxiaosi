@@ -39,3 +39,7 @@ deploy/.env
 # TLS 证书（acme.sh 安装产物，含私钥，绝不入库）
 deploy/certs/*
 !deploy/certs/.gitkeep
+
+# 个人内容（不进仓库，本地保留）：章节化博客与面试备考资料
+/blog/
+/interview/
