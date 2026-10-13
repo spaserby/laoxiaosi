@@ -1,7 +1,9 @@
 <script setup>
 /**
  * 咨询记录（V9 公报问答台皮肤）：咨询请求（墨块右对齐）/ AI 答复（公报体平铺）
- * 滚动容器是 ChatView 的 .page-scroll（整刊滚动），内容变化自动滚底
+ * 滚动策略（对齐 DeepSeek/豆包）：流式生成期间不跟随滚动——回答在下方持续生成，
+ * 用户自行下滑阅读；仅在发送新提问时把新问题定位到视口顶部（首屏即见回答开头），
+ * 打开/切换会话时滚到最新内容。
  */
 import { watch, nextTick, onMounted } from 'vue'
 import { FileText } from 'lucide-vue-next'
@@ -16,14 +18,28 @@ onMounted(() => {
   scrollBottom()
 })
 
+// 只在"会话/消息条数"变化时定位（新提问置顶、切会话滚底）；
+// token 流的持续更新不触发滚动——生成期间页面保持静止，由用户手动下滑
 watch(
-  () => [store.currentMessages.length, store.currentMessages.at(-1)?.content],
-  () => nextTick(scrollBottom)
+  () => [store.currentSessionId, store.currentMessages.length],
+  async () => {
+    await nextTick()
+    if (store.isStreaming) scrollToLastQuestion()
+    else scrollBottom()
+  }
 )
 
+function scrollToLastQuestion() {
+  const list = scroller ? scroller.querySelectorAll('.msg-user') : []
+  const el = list[list.length - 1]
+  if (!el) return scrollBottom()
+  // 桌面（.page-scroll 内层滚动）与移动端（document 滚动）通用
+  el.scrollIntoView({ block: 'start' })
+}
+
 function scrollBottom() {
-  // 桌面：.page-scroll 是滚动容器；移动端（≤860px）它被内容擑开、实际滚动发生在 document——
-  // 不区分则移动端流式回答不跟滚
+  // 桌面：.page-scroll 是滚动容器；移动端（≤860px）它被内容撑开、实际滚动发生在 document——
+  // 不区分则移动端定位不生效
   if (scroller && scroller.scrollHeight > scroller.clientHeight + 4) {
     scroller.scrollTop = scroller.scrollHeight
   } else {
@@ -64,6 +80,8 @@ function scrollBottom() {
   background: var(--ink); color: #F2F3F5; padding: 14px 20px;
   font-family: var(--sans); font-size: 13.5px; line-height: 1.8;
   white-space: pre-wrap; animation: up .5s var(--soft-ease) both;
+  /* 新提问定位到视口顶部时留一点呼吸空间（见 scrollToLastQuestion） */
+  scroll-margin-top: 26px;
 }
 .mu-l {
   display: block; font-family: var(--mono); font-size: 9.5px; letter-spacing: .24em;
