@@ -1,7 +1,8 @@
 -- ============================================================
 -- PostgreSQL 全量底账 schema（底账 + 记忆 + 同步指纹 + 向量表）
 -- 向量表 vector_store 在此一并创建（后端 initialize-schema 已关闭：
---   阿里云 RDS 的 pgvector 分叉余弦 HNSW 索引在本实例失效，改走精确扫描，
+--   阿里云 RDS 的 vector 分叉把余弦 HNSW 索引偷换成 rds_vector_cosine_ops，
+--   该实现在 1024 维上返回错误邻居（"向量找自己"命中 0/20），故线上改走精确扫描；
 --   详见 lab-chat-backend/src/main/resources/application.yml 中 vectorstore 段注释）
 -- 执行：psql -U postgres -d lab_legal_kb -f pg-schema.sql
 -- ============================================================
@@ -10,9 +11,14 @@ CREATE EXTENSION IF NOT EXISTS pg_trgm;
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";   -- vector_store.id 的 uuid_generate_v4() 依赖
 
 -- 向量表：列结构与 Spring AI PgVectorStore 的 DDL 保持一致（initialize-schema: true 时的产物）
--- 注意：此处刻意不建 HNSW 索引（见头部说明）；日后 RDS 修复后可手工建：
---   CREATE INDEX spring_ai_vector_index ON vector_store USING hnsw (embedding vector_cosine_ops);
--- 建后务必验证"向量找自己"：同一条目的 embedding 检索 Top-1 应是自己、相似度 ≈1.000。
+-- 注意：此处刻意不建 HNSW 索引（见头部说明，线上改走精确扫描，正确性优先）。
+-- 需要 ANN 速度时按下面两步建，建后务必用 pg-hnsw-cosine-selfcheck.sql 复验"向量找自己"：
+--   ① 仅阿里云 RDS 需要（stock pgvector 无此 GUC，执行会报错）：
+--      SET rds_vector_cosine_ops_enabled = off;
+--   ② CREATE INDEX IF NOT EXISTS idx_vector_store_embedding_hnsw
+--        ON vector_store USING hnsw (embedding vector_cosine_ops);
+--   ★ 顺序不能反：GUC 必须在同会话、CREATE INDEX 之前设置，否则又被偷换成 rds_vector_cosine_ops
+--     （已建成的 rds_* 索引改 GUC 也救不活，只能 DROP 后重建）。
 CREATE TABLE IF NOT EXISTS vector_store (
   id        uuid DEFAULT uuid_generate_v4() PRIMARY KEY,
   content   text,

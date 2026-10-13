@@ -70,13 +70,18 @@ spring:
   #   ① DROP TABLE vector_store;  ② DELETE FROM rag_ledger;（不清指纹同步会判"无变更"不重嵌）
   #   ③ 重启后端按新配置重建表；  ④ 管理端点一次同步全量重嵌。
   #   （仅换 embedding 模型名无需此流程：指纹含模型名盐，点同步即自动全量重建）
-  # ★ 2026-10-13 已置 false（重要）：阿里云 RDS 的 pgvector 分叉把余弦 HNSW 索引实现为
-  #   rds_vector_cosine_ops，该实现在本实例上失效——ANN 返回的是错误邻居（连"向量找自己"
-  #   都找不到，Top 相似度只有 ~0.35），导致强制检索打底 0 命中、引用卡退化为正则兜底。
-  #   initialize-schema: true 会在每次启动重建这个坏索引，故关闭并改走精确扫描
-  #   （56k 向量 ≈ 128ms，可接受）。建表 DDL 已移入 scripts/pg-schema.sql（随 db/init.sql 建库）。
-  #   日后 RDS 修复/换实例后：置回 true（或手工建 vector_cosine_ops 索引并验证"向量找自己"），
-  #   再删除 scripts/pg-schema.sql 中对应说明。
+  # ★ 2026-10-13 已置 false（重要）：阿里云 RDS PostgreSQL(18.4 / vector 0.8.1.2) 的 vector 是分叉版，
+  #   建索引时会把 vector_cosine_ops **静默改写成自家 rds_vector_cosine_ops**
+  #   （DDL 只回一行 NOTICE："convert vector_cosine_ops to rds_vector_cosine_ops"）。
+  #   该自家实现在 1024 维上失效、返回错误邻居：用真向量做"向量找自己"命中 0/20，
+  #   同一份数据换社区 opclass 则 20/20（10 行小表正常 → 维度触发，不是规模/数据问题）。
+  #   后果是强制检索打底长期 0 命中、引用卡退化为正则兜底，且全程无报错（静默失效）。
+  #   处置：① 当前线上关闭 initialize-schema，改走精确扫描（56k 向量 ≈ 128ms，可接受），
+  #   建表 DDL 见 scripts/pg-schema.sql；② 想要 ANN 速度则**建索引前**先
+  #   SET rds_vector_cosine_ops_enabled = off 再 CREATE INDEX，即得社区 vector_cosine_ops 索引
+  #   （实测 2k/10k 真向量 20/20；GUC 只在 DDL 时生效，查询端会话语义无关）；
+  #   已建成的 rds_* 索引改 GUC 救不活，必须 DROP 重建。③ 自建/修复后置回 true。
+  #   自检脚本：scripts/pg-hnsw-cosine-selfcheck.sql（30 秒判定实例是否中招）。
     vectorstore:
       pgvector:
         initialize-schema: false
