@@ -395,7 +395,6 @@ async function onDelete(sessionId, title) {
         <div class="set-row">
           <div class="set-txt">
             <b>头像</b>
-            <span>点击头像放大预览，确认后保存（登录用户永久保存，跨设备生效）</span>
           </div>
         </div>
         <div class="avatar-grid">
