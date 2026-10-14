@@ -70,18 +70,25 @@ spring:
   #   ① DROP TABLE vector_store;  ② DELETE FROM rag_ledger;（不清指纹同步会判"无变更"不重嵌）
   #   ③ 重启后端按新配置重建表；  ④ 管理端点一次同步全量重嵌。
   #   （仅换 embedding 模型名无需此流程：指纹含模型名盐，点同步即自动全量重建）
-  # ★ 2026-10-13 已置 false（重要）：阿里云 RDS PostgreSQL(18.4 / vector 0.8.1.2) 的 vector 是分叉版，
-  #   建索引时会把 vector_cosine_ops **静默改写成自家 rds_vector_cosine_ops**
-  #   （DDL 只回一行 NOTICE："convert vector_cosine_ops to rds_vector_cosine_ops"）。
-  #   该自家实现在 1024 维上失效、返回错误邻居：用真向量做"向量找自己"命中 0/20，
-  #   同一份数据换社区 opclass 则 20/20（10 行小表正常 → 维度触发，不是规模/数据问题）。
-  #   后果是强制检索打底长期 0 命中、引用卡退化为正则兜底，且全程无报错（静默失效）。
-  #   处置：① 当前线上关闭 initialize-schema，改走精确扫描（56k 向量 ≈ 128ms，可接受），
-  #   建表 DDL 见 scripts/pg-schema.sql；② 想要 ANN 速度则**建索引前**先
-  #   SET rds_vector_cosine_ops_enabled = off 再 CREATE INDEX，即得社区 vector_cosine_ops 索引
-  #   （实测 2k/10k 真向量 20/20；GUC 只在 DDL 时生效，查询端会话语义无关）；
-  #   已建成的 rds_* 索引改 GUC 救不活，必须 DROP 重建。③ 自建/修复后置回 true。
-  #   自检脚本：scripts/pg-hnsw-cosine-selfcheck.sql（30 秒判定实例是否中招）。
+  # ★ 2026-10-13～10-14 事故全记录：阿里云 RDS 余弦 HNSW 索引静默失效 → 已修复闭环
+  #   【故障】验收发现"强制检索打底"长期 0 命中（metrics 里 citations=0），全程无报错（静默失效），
+  #     引用卡退化为正则兜底。根因：RDS（当时内核 20260830 / vector 0.8.1.2 分叉版）建索引时把
+  #     vector_cosine_ops **静默改写成自家 rds_vector_cosine_ops**（DDL 只回一行 NOTICE），
+  #     而该私有实现在 1024 维下返回错误邻居——"向量找自己"自身命中 0/20，
+  #     同一份数据换社区 opclass 则 20/20（10 行小表正常 → 维度触发，与数据/规模无关）。
+  #     应急：关 initialize-schema 改走精确扫描（建表 DDL 见 scripts/pg-schema.sql）。
+  #   【闭环】阿里云工单确认为该内核版本缺陷并给出修复版；实例已升级内核
+  #     20260830 → 20260915（PG 18.4 → 18.6）。同一份自检脚本复验：
+  #     升级前 self_hits = 2/200 → 升级后 200/200（rds_vector_cosine_ops 已修复）。
+  #   【现状】索引已用**默认方式**建好，不再需要 rds_vector_cosine_ops_enabled 开关：
+  #     索引名 spring_ai_vector_index（与 Spring AI initialize-schema 同名，避免日后重复建）；
+  #     实测"向量找自己" 10/10、top-12 召回 11.95/12（99.6%）、ANN 0.785ms vs 精确扫描 60.4ms。
+  #   【护栏】scripts/pg-hnsw-cosine-selfcheck.sql：30 秒判定任意实例余弦 HNSW 是否可信；
+  #     换实例 / 升内核 / 重建索引后先跑一遍。未修复实例的兜底方式（社区 opclass）见 pg-schema.sql。
+  #   initialize-schema 保持 false：表与索引由 scripts/pg-schema.sql 显式管理，应用启动不改 schema。
+  # ★ 幂等/改配置告诫（沿用）：initialize-schema=true 下 CREATE ... IF NOT EXISTS 意味着"改配置不生效"，
+  #   改 dimensions/index-type/distance-type 需四步：DROP TABLE vector_store → DELETE FROM rag_ledger
+  #   （不清指纹会判"无变更"不重嵌）→ 重启按新配置重建 → 管理端点全量重嵌。
     vectorstore:
       pgvector:
         initialize-schema: false

@@ -1,30 +1,31 @@
 -- ============================================================
 -- PostgreSQL 全量底账 schema（底账 + 记忆 + 同步指纹 + 向量表）
--- 向量表 vector_store 在此一并创建（后端 initialize-schema 已关闭：
---   阿里云 RDS 的 vector 分叉把余弦 HNSW 索引偷换成 rds_vector_cosine_ops，
---   该实现在 1024 维上返回错误邻居（"向量找自己"命中 0/20），故线上改走精确扫描；
---   详见 lab-chat-backend/src/main/resources/application.yml 中 vectorstore 段注释）
+-- 向量表 vector_store 与余弦 HNSW 索引在此一并创建（后端 initialize-schema 已关闭：
+--   表/索引由本脚本显式管理。2026-10-14 阿里云内核升级 20260915 后余弦索引缺陷已修复，
+--   索引可用默认方式创建；完整事故记录见 application.yml 中 vectorstore 段注释）
 -- 执行：psql -U postgres -d lab_legal_kb -f pg-schema.sql
 -- ============================================================
 CREATE EXTENSION IF NOT EXISTS vector;
 CREATE EXTENSION IF NOT EXISTS pg_trgm;
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";   -- vector_store.id 的 uuid_generate_v4() 依赖
 
--- 向量表：列结构与 Spring AI PgVectorStore 的 DDL 保持一致（initialize-schema: true 时的产物）
--- 注意：此处刻意不建 HNSW 索引（见头部说明，线上改走精确扫描，正确性优先）。
--- 需要 ANN 速度时按下面两步建，建后务必用 pg-hnsw-cosine-selfcheck.sql 复验"向量找自己"：
---   ① 仅阿里云 RDS 需要（stock pgvector 无此 GUC，执行会报错）：
---      SET rds_vector_cosine_ops_enabled = off;
---   ② CREATE INDEX IF NOT EXISTS idx_vector_store_embedding_hnsw
---        ON vector_store USING hnsw (embedding vector_cosine_ops);
---   ★ 顺序不能反：GUC 必须在同会话、CREATE INDEX 之前设置，否则又被偷换成 rds_vector_cosine_ops
---     （已建成的 rds_* 索引改 GUC 也救不活，只能 DROP 后重建）。
+-- 向量表 + 余弦 HNSW 索引（列结构与 Spring AI PgVectorStore 的 DDL 一致）
+-- 索引名刻意与 Spring AI initialize-schema 保持一致（spring_ai_vector_index），
+-- 日后若把 initialize-schema 改回 true 也不会重复建。
+-- ★ 建索引后务必用 pg-hnsw-cosine-selfcheck.sql 复验"向量找自己"（应 100% 命中）：
+--   阿里云 RDS 曾在内核 20260830 上把 vector_cosine_ops 静默改写成私有 rds_vector_cosine_ops，
+--   该实现在 1024 维下返回错误邻居；20260915 内核已修复（自检 2/200 → 200/200）。
+--   ★ 若要在**未修复**的实例上建（兜底方案）：必须同会话、在建索引之前先执行
+--       SET rds_vector_cosine_ops_enabled = off;   -- 仅阿里云 RDS 特有 GUC，stock pgvector 会报错
+--     否则又被改写成 rds_*；已建成的 rds_* 索引改 GUC 也救不活，只能 DROP 后重建。
 CREATE TABLE IF NOT EXISTS vector_store (
   id        uuid DEFAULT uuid_generate_v4() PRIMARY KEY,
   content   text,
   metadata  json,
   embedding vector(1024)
 );
+CREATE INDEX IF NOT EXISTS spring_ai_vector_index
+  ON vector_store USING hnsw (embedding vector_cosine_ops);
 
 -- ★ 历史库升级补列：CREATE TABLE IF NOT EXISTS 对已存在的表是空操作，
 --   老库不会自动长出后加的列（doc_type / owner_key），必须显式 ALTER 兜底，
