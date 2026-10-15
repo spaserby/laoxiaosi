@@ -106,7 +106,10 @@ public class ChatService {
      * 层3 工具使用条件（searchLaw 只补充检索，不重复检索已注入内容）→
      * 层4 联网条件 → 层5 计算与闲聊。消除"强制注入"与"必须先调工具"的指令打架。 */
 
-    private static final String BASE_PERSONA = "你是一个友好的中文法律助手，回答简洁准确。"
+    // 实测（2026-10-15）：完整长 prompt（身份卡+注入法条+四段式模板+few-shot）下 deepseek-v4-flash
+    // 的 reasoning_content 会自发漂移为英文（"The user asks..."），短 prompt 则默认中文；
+    // 显式要求"思考和推理过程必须使用中文"可稳定修正，勿删此句
+    private static final String BASE_PERSONA = "你是一个友好的中文法律助手，回答简洁准确，思考和推理过程必须使用中文。"
             + "回答正文禁止使用任何表情符号（emoji）；免责声明与声明性尾注由系统统一附加，"
             + "你不得自行在回答中输出任何形式的免责声明、风险提示尾注或模仿历史消息中的声明格式。"
             + "若本轮含用户上传的附件文档：优先依据文档内容分析并在引用时注明文档名；"
