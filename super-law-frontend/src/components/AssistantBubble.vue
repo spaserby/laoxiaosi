@@ -15,7 +15,14 @@ const props = defineProps({
 
 marked.setOptions({ breaks: true })
 
-const html = computed(() => marked.parse(props.message.content || ''))
+/**
+ * 模型偶发把标题标记写在句尾（如 "…条文依据。## 一、结论先行"），CommonMark 只在行首识别 #，
+ * 于是字面量 "##" 漏进正文。仅在中文字句结束标点后紧跟 # 标记时补一个换行——
+ * 合法 Markdown 的标题必在行首，此改写无歧义。
+ */
+const normalizeHeadings = (md) => md.replace(/([。！？；”"…])(#{1,4})(?=\s*\S)/g, '$1\n$2')
+
+const html = computed(() => marked.parse(normalizeHeadings(props.message.content || '')))
 
 /** 结构化引用（citation 事件）优先；正则解析降级兜底 */
 const citations = computed(() => {
@@ -103,6 +110,19 @@ const topScore = computed(() => {
 .md :deep(strong) { color: var(--acc); font-weight: 700; }
 .md :deep(blockquote) { border-left: 2px solid var(--acc); padding: 2px 14px; margin: 10px 0; color: var(--soft); background: var(--acc-soft); }
 .md :deep(code) { font-family: var(--mono); font-size: 12.5px; background: rgba(22, 25, 31, .05); padding: 1px 5px; }
+/* Markdown 表格：全局 reset（* { margin:0; padding:0 }）把单元格默认内边距一并清零，
+   不补样式时两列只隔 2px、行与行无分隔，长中文换行后整块"糊在一起"（2026-10-15 实测复现）。
+   text-align:left 覆盖正文继承的 justify——窄单元格里中文两端对齐会拉出难看的字距 */
+.md :deep(table) {
+  width: 100%; border-collapse: collapse; margin: 14px 0;
+  font-size: 13.5px; line-height: 1.85;
+}
+.md :deep(th), .md :deep(td) {
+  padding: 8px 10px; border: 1px solid var(--line);
+  text-align: left; vertical-align: top; word-break: break-word;
+}
+.md :deep(th) { background: var(--acc-soft); font-weight: 700; }
+.md :deep(tbody tr:nth-child(even)) { background: rgba(22, 25, 31, .02); }
 
 .cursor {
   display: inline-block; width: 9px; height: 16px; background: var(--acc);
