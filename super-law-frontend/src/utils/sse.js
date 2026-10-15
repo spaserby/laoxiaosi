@@ -65,8 +65,23 @@ export class SseClient {
       }
       const resp = await fetch(this.url, init)
       if (!resp.ok || !resp.body) {
-        // 403（会话越权/配额）等：把状态码交给 error 处理器，调用方决定提示文案
-        this._emit('error', { status: resp.status })
+        // 403（会话越权）/401（登录过期）等：把状态码**连同响应体 message** 一起交给 error 处理器。
+        // 此前只带 status、body 被丢弃：调用方无法识别 403 分支，插值对象又只能显示 [object Object]
+        const payload = { status: resp.status }
+        try {
+          const text = await resp.text()
+          if (text) {
+            try {
+              const j = JSON.parse(text)
+              if (j && typeof j === 'object' && typeof j.message === 'string') payload.message = j.message
+            } catch {
+              payload.message = text.slice(0, 200)
+            }
+          }
+        } catch {
+          /* 响应体读取失败：仅凭状态码提示 */
+        }
+        this._emit('error', payload)
         return
       }
       this.readyState = 1

@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { listSessions, getSessionMessages, deleteSession, stopChat } from '../api/session'
 import { SseClient } from '../utils/sse'
 import { sessionHeaders } from '../utils/guest'
+import { useUserStore } from './user'
 
 /**
  * 聊天 Store：会话列表 / 消息 / 生成状态机（idle | streaming）
@@ -9,8 +10,8 @@ import { sessionHeaders } from '../utils/guest'
  * SSE 协议（与后端 ChatController 对齐）：
  *   token → 追加到当前 assistant 消息
  *   done  → 正常结束，关闭 EventSource
- *   error → 后端异常事件（带 data），追加错误文案后结束
- * 连接级 error（无 data）视为流中断，同样收尾。
+ *   error → 统一从 e.data 取载荷：传输层失败为 {status?, message?}（403 越权/401 过期/流中断），
+ *           后端命名事件为字符串；403/401 追加"无权访问"文案并触发登录态自愈（loadMe）
  *
  * 停止 = 关 EventSource + POST /chat/stop（双中断，与后端无状态停止设计契合）。
  */
@@ -203,10 +204,28 @@ export const useChatStore = defineStore('chat', {
         this.finish(sid)
       })
       es.addEventListener('error', (e) => {
-        // 后端命名 error 事件带 data；连接级错误带 status/message（403 越权、链路中断等）
-        if (e.data) assistant.content += `\n\n[生成失败] ${e.data}`
-        else if (e.status === 403) assistant.content += '\n\n[无权访问] 该会话不属于当前身份，请新建咨询。'
-        else if (e.message) assistant.content += `\n\n[连接中断] ${e.message}`
+        // ★ 载荷形态统一从 e.data 取（SseClient._emit 把载荷挂在 data 上，与 EventSource 语义一致）：
+        //   传输层失败 → data = {status?, message?}（非 2xx 响应/流未 done 中断）
+        //   后端命名 error 事件 → data = 字符串
+        //   直接读 e.status/e.message 会永远拿不到值，插值对象又会渲染成 [object Object]
+        const raw = e && e.data
+        const obj = raw && typeof raw === 'object' ? raw : null
+        const status = (obj && obj.status) ?? (e && e.status)
+        const msg = (typeof raw === 'string' ? raw : obj && obj.message) || ''
+        if (status === 401 || status === 403) {
+          assistant.content += `\n\n[无权访问] ${msg || '该会话不属于当前身份'}。请新建咨询后重试；若登录已过期，请重新登录。`
+          // 身份自愈：无效 token 会被后端静默按游客处理 → 归属冲突 403，而侧栏仍显示"已登录"。
+          // 复用 loadMe()：token 有效则刷新资料；无效则自动登出（清 sl_token，侧栏回游客态）
+          useUserStore().loadMe()
+        } else if (status) {
+          assistant.content += `\n\n[生成失败] 服务返回 ${status}${msg ? `（${msg}）` : ''}，请稍后重试。`
+        } else if (msg === '连接中断') {
+          assistant.content += '\n\n[连接中断] 生成未完成，请重试。'
+        } else if (msg) {
+          assistant.content += `\n\n[生成失败] ${msg}`
+        } else {
+          assistant.content += '\n\n[生成失败] 服务异常，请稍后重试。'
+        }
         this.finish(sid)
       })
     },
