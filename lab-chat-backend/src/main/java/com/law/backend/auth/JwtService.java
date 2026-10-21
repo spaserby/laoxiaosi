@@ -28,8 +28,10 @@ public class JwtService {
     private final SecretKey key;
     private final long expireMillis;
 
-    /** 仓库内历史上出现过的默认密钥：等同于"未配置"，绝不允许用于生产 */
-    private static final String DEV_DEFAULT = "change-me-in-production-legal-assistant-dev-secret";
+    /** 仓库内历史上出现过的默认密钥：等同于"未配置"，绝不允许用于生产（含已废弃的字段默认值，防配置回退踩雷） */
+    private static final java.util.Set<String> DEV_DEFAULTS = java.util.Set.of(
+            "change-me-in-production-legal-assistant-dev-secret",
+            "legal-assistant-dev-jwt-secret-key-2026");
 
     /**
      * 密钥策略（P0 安全整改）：
@@ -41,7 +43,7 @@ public class JwtService {
      */
     public JwtService(AuthProperties properties, org.springframework.core.env.Environment environment) {
         String secret = properties.getJwtSecret();
-        if (secret == null || secret.isBlank() || DEV_DEFAULT.equals(secret)) {
+        if (secret == null || secret.isBlank() || DEV_DEFAULTS.contains(secret)) {
             if (java.util.Arrays.asList(environment.getActiveProfiles()).contains("prod")) {
                 throw new IllegalStateException(
                         "生产环境必须注入强随机 JWT_SECRET（当前未配置或仍为仓库默认值），拒绝启动");

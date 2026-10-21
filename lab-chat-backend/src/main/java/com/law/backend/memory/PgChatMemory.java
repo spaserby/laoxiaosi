@@ -12,6 +12,9 @@ import org.springframework.ai.chat.messages.SystemMessage;
 import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -46,9 +49,10 @@ public class PgChatMemory implements ChatMemory {
     private final ModelRouteProperties routeProperties;
 
     /**
-     * 追加消息 → 窗口裁剪（超 verbatimRounds 轮删最旧）→ 被裁部分异步滚动摘要
+     * 追加消息与窗口裁剪在同一事务内完成；提交成功后再异步摘要被裁部分。
      */
     @Override
+    @Transactional
     public void add(String conversationId, List<Message> messages) {
         if (messages == null || messages.isEmpty()) {
             return;
@@ -64,7 +68,13 @@ public class PgChatMemory implements ChatMemory {
             List<MessageRecord> discarded = messageMapper.selectOldest(conversationId, overflow);
             messageMapper.deleteOldest(conversationId, overflow);
             if (properties.isSummaryEnabled() && !discarded.isEmpty()) {
-                summarizeAsync(conversationId, discarded);
+                // 包括加入外层事务的情况：回滚时不应更新摘要，也不在事务内调用模型。
+                TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                    @Override
+                    public void afterCommit() {
+                        summarizeAsync(conversationId, discarded);
+                    }
+                });
             }
         }
     }

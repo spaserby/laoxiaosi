@@ -444,18 +444,22 @@ public class ChatService {
                                 quotaService.rollback(quotaCtx);
                                 return Flux.just(ServerSentEvent.<String>builder("生成失败: " + e.getMessage()).event(EVENT_ERROR).build());
                             })
-                            // 正常完成/停止后：保存助手回复到 Redis + 输出 metrics 日志 + 发送 done 标记
-                            .concatWith(Flux.defer(() -> {
+                            // 正常完成/停止后：保存助手回复 + 输出 metrics 日志 + 发送 done 标记
+                            // ★ concatWith 后段跑在上一段的 onComplete 线程（LLM 流的 reactor-http-nio-*），
+                            //   chatMemory.add 是同步 JDBC（insert/count/select/delete 多次往返），
+                            //   必须切到弹性线程，否则每轮对话收尾都会阻塞 event loop
+                            .concatWith(Mono.<ServerSentEvent<String>>fromCallable(() -> {
                                 log.info("流式生成完成: sessionId={}", sessionId);
                                 if (assistantReply.length() > 0) {
                                     chatMemory.add(sessionId, List.of(new AssistantMessage(assistantReply.toString())));
                                 }
                                 logMetrics(sessionId, ctxRef.get());
-                                return Flux.just(ServerSentEvent.<String>builder("[DONE]").event(EVENT_DONE).build());
-                            }))
+                                return ServerSentEvent.<String>builder("[DONE]").event(EVENT_DONE).build();
+                            }).subscribeOn(Schedulers.boundedElastic()))
                             // 订阅时清除上轮残留 stop 标志；无论完成/错误/取消都清理
-                            .doOnSubscribe(s -> redissonClient.getBucket(STOP_KEY_PREFIX + sessionId).delete())
-                            .doFinally(signal -> redissonClient.getBucket(STOP_KEY_PREFIX + sessionId).delete());
+                            // ★ 用 deleteAsync 而非 delete：Redisson 同步 API 是网络 IO，同样不能在 event loop 上等待
+                            .doOnSubscribe(s -> redissonClient.getBucket(STOP_KEY_PREFIX + sessionId).deleteAsync())
+                            .doFinally(signal -> redissonClient.getBucket(STOP_KEY_PREFIX + sessionId).deleteAsync());
                 });
     }
 
@@ -603,34 +607,38 @@ public class ChatService {
                     .concatWith(tail);
         }
         StringBuilder roundBuf = new StringBuilder();
+        // ★ 审校段整体切到弹性线程：stopFlagSet 与审校计数都是 Redisson 同步 IO，
+        //   而 concatWith 后段跑在上一段的 onComplete 线程（LLM 流的 reactor-http-nio-*）。
+        //   subscribeOn 只作用于这一段，前面 token 流的发射线程不受影响
+        Flux<String> reviewStep = Flux.defer(() -> {
+            // 用户已停止生成（Redis stop 标志存在）→ 不重试，直接收尾
+            if (stopFlagSet(ctx.sessionId())) {
+                return tail;
+            }
+            AnswerReviewer.ReviewResult result = answerReviewer.review(roundBuf.toString(), ctx.registry());
+            // 审校累计计数（首页"回答审校通过率"真实数据源，无 TTL）——异步自增，不在调用线程上等网络
+            redissonClient.getAtomicLong("chat:stats:review_total").incrementAndGetAsync();
+            if (result.pass()) {
+                redissonClient.getAtomicLong("chat:stats:review_pass").incrementAndGetAsync();
+                ctx.metrics().reviewNote("pass");
+                log.info("审校通过: sessionId={}, reason={}", ctx.sessionId(), result.reason());
+                return tail;
+            }
+            ctx.metrics().reviewNote("retry: " + result.reason());
+            log.info("审校不通过，重试一轮: sessionId={}, reason={}", ctx.sessionId(), result.reason());
+            String feedbackPrompt = ctx.systemPrompt()
+                    + "\n\n【审校反馈】上一次回答因「" + result.reason()
+                    + "」被驳回。请重新回答：引用必须来自系统注入的检索条文或 searchLaw/webSearch 的检索结果，"
+                    + "不得编造条文或来源。";
+            return Flux.just(RETRY_MARKER)
+                    .concatWith(generate(ctx, feedbackPrompt, ctx.routed())
+                            .onErrorResume(e -> generate(ctx, feedbackPrompt, modelRouter.fallback())))
+                    .concatWith(tail);
+        }).subscribeOn(Schedulers.boundedElastic());
         return head.concatWith(citationFlow)
                 .concatWith(firstRound.doOnNext(roundBuf::append))
                 .concatWith(enrichCitationsFlow(ctx, roundBuf))
-                .concatWith(Flux.defer(() -> {
-                    // 用户已停止生成（Redis stop 标志存在）→ 不重试，直接收尾
-                    if (stopFlagSet(ctx.sessionId())) {
-                        return tail;
-                    }
-                    AnswerReviewer.ReviewResult result = answerReviewer.review(roundBuf.toString(), ctx.registry());
-                    // 审校累计计数（首页"回答审校通过率"真实数据源，无 TTL）
-                    redissonClient.getAtomicLong("chat:stats:review_total").incrementAndGet();
-                    if (result.pass()) {
-                        redissonClient.getAtomicLong("chat:stats:review_pass").incrementAndGet();
-                        ctx.metrics().reviewNote("pass");
-                        log.info("审校通过: sessionId={}, reason={}", ctx.sessionId(), result.reason());
-                        return tail;
-                    }
-                    ctx.metrics().reviewNote("retry: " + result.reason());
-                    log.info("审校不通过，重试一轮: sessionId={}, reason={}", ctx.sessionId(), result.reason());
-                    String feedbackPrompt = ctx.systemPrompt()
-                            + "\n\n【审校反馈】上一次回答因「" + result.reason()
-                            + "」被驳回。请重新回答：引用必须来自系统注入的检索条文或 searchLaw/webSearch 的检索结果，"
-                            + "不得编造条文或来源。";
-                    return Flux.just(RETRY_MARKER)
-                            .concatWith(generate(ctx, feedbackPrompt, ctx.routed())
-                                    .onErrorResume(e -> generate(ctx, feedbackPrompt, modelRouter.fallback())))
-                            .concatWith(tail);
-                }));
+                .concatWith(reviewStep);
     }
 
     /** 回答文本中的法条引用（与前端正则兜底同款）：《法名》第X条 */
@@ -643,13 +651,16 @@ public class ChatService {
      * 前端引用卡不再只有干巴巴的条号；模型编造的引用（底账查无）不进卡片（与审校哲学一致）
      */
     private Flux<String> enrichCitationsFlow(ChatContext ctx, StringBuilder replyBuf) {
-        return Flux.defer(() -> {
+        // ★ 本段按回答文本反查底账（最多 5 次 JDBC），而 concatWith 后段的 defer 跑在
+        //   上一段的 onComplete 线程（LLM 流的 reactor-http-nio-*）——整体切到弹性线程；
+        //   返回 List 而非 Flux，避免在阻塞块里构造响应式链
+        return Mono.<List<String>>fromCallable(() -> {
             if (!ctx.groundedCitations().isEmpty()) {
-                return Flux.empty();   // 已有结构化引用（打底命中），不重复推
+                return List.of();   // 已有结构化引用（打底命中），不重复推
             }
             String reply = replyBuf.toString();
             if (reply.isEmpty()) {
-                return Flux.empty();
+                return List.of();
             }
             java.util.regex.Matcher m = CITE_REF_PATTERN.matcher(reply);
             List<LawCitation> list = new ArrayList<>();
@@ -668,11 +679,11 @@ public class ChatService {
                         a.getCategory() == null ? "" : a.getCategory(), 0.0, a.getContent(), false));
             }
             if (list.isEmpty()) {
-                return Flux.empty();
+                return List.of();
             }
             log.info("兜底引用补全命中: {} 条", list.size());
-            return Flux.just(CITATION_MARKER + citationsToJson(list));
-        });
+            return List.of(CITATION_MARKER + citationsToJson(list));
+        }).subscribeOn(Schedulers.boundedElastic()).flatMapIterable(l -> l);
     }
 
     /**
@@ -823,9 +834,13 @@ public class ChatService {
     }
 
     /** 停止触发器：400ms 轮询 stop 标志，首次出现即发射（takeUntilOther 消费） */
-    private reactor.core.publisher.Flux<Long> stopTrigger(String sessionId) {
+    private reactor.core.publisher.Flux<Boolean> stopTrigger(String sessionId) {
+        // ★ 用 isExistsAsync 而非 isExists：Flux.interval 跑在 parallel 调度器（CPU 核数线程），
+        //   同步 Redis 调用会污染该调度器、拖慢全站 delayElements/timeout 类操作符
         return reactor.core.publisher.Flux.interval(java.time.Duration.ofMillis(400))
-                .filter(t -> stopFlagSet(sessionId))
+                .concatMap(t -> Mono.fromCompletionStage(
+                        redissonClient.getBucket(STOP_KEY_PREFIX + sessionId).isExistsAsync()))
+                .filter(Boolean::booleanValue)
                 .take(1);
     }
 }

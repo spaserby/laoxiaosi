@@ -3,6 +3,7 @@ package com.law.backend.controller;
 import com.law.backend.service.SessionAccessDeniedException;
 import com.law.backend.service.SessionIndexService;
 import com.law.backend.service.SessionOwnershipService;
+import com.law.backend.util.Blocking;
 import lombok.RequiredArgsConstructor;
 import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.ai.chat.messages.Message;
@@ -16,6 +17,7 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ServerWebExchange;
+import reactor.core.publisher.Mono;
 
 import java.util.List;
 import java.util.Map;
@@ -42,35 +44,44 @@ public class SessionController {
 
     /** 会话列表：只返回当前调用方的会话（登录用户按 userId；匿名按 X-Guest-Key 凭据） */
     @GetMapping("/list")
-    public Map<String, Object> list(@AuthenticationPrincipal Long userId, ServerWebExchange exchange) {
-        SessionOwnershipService.Owner owner = ownershipService.resolve(exchange.getRequest().getHeaders(), userId);
-        if (SessionOwnershipService.ANON.equals(owner.key())) {
-            // 无任何凭据：不返回任何历史（旧行为是"全站会话列表"，属越权读取）
-            return Map.of("code", 200, "data", List.of());
-        }
-        return Map.of("code", 200, "data", sessionIndexService.list(owner.key()));
+    public Mono<Map<String, Object>> list(@AuthenticationPrincipal Long userId, ServerWebExchange exchange) {
+        // 会话列表读 PG（sessionMapper.findAllByOwner），必须在弹性线程执行
+        return Blocking.<Map<String, Object>>call(() -> {
+            SessionOwnershipService.Owner owner = ownershipService.resolve(exchange.getRequest().getHeaders(), userId);
+            if (SessionOwnershipService.ANON.equals(owner.key())) {
+                // 无任何凭据：不返回任何历史（旧行为是"全站会话列表"，属越权读取）
+                return Map.of("code", 200, "data", List.of());
+            }
+            return Map.of("code", 200, "data", sessionIndexService.list(owner.key()));
+        });
     }
 
     /** 会话历史消息：Spring AI Message 转 {role, content} DTO（非本人会话 → 403） */
     @GetMapping("/{sessionId}/messages")
-    public Map<String, Object> messages(@PathVariable("sessionId") String sessionId,
-                                        @AuthenticationPrincipal Long userId, ServerWebExchange exchange) {
-        ownershipService.require(sessionId, ownershipService.resolve(exchange.getRequest().getHeaders(), userId));
-        List<Map<String, String>> data = chatMemory.get(sessionId).stream()
-                .map(this::toDto)
-                .toList();
-        return Map.of("code", 200, "data", data);
+    public Mono<Map<String, Object>> messages(@PathVariable("sessionId") String sessionId,
+                                              @AuthenticationPrincipal Long userId, ServerWebExchange exchange) {
+        // 归属校验 + chatMemory.get（PG 读摘要与窗口原文，两次 SQL）都是阻塞调用
+        return Blocking.<Map<String, Object>>call(() -> {
+            ownershipService.require(sessionId, ownershipService.resolve(exchange.getRequest().getHeaders(), userId));
+            List<Map<String, String>> data = chatMemory.get(sessionId).stream()
+                    .map(this::toDto)
+                    .toList();
+            return Map.of("code", 200, "data", data);
+        });
     }
 
     /** 删除会话：记忆本体 + 索引条目（非本人会话 → 403） */
     @DeleteMapping("/{sessionId}")
-    public Map<String, Object> delete(@PathVariable("sessionId") String sessionId,
-                                      @AuthenticationPrincipal Long userId, ServerWebExchange exchange) {
-        SessionOwnershipService.Owner owner = ownershipService.resolve(exchange.getRequest().getHeaders(), userId);
-        ownershipService.require(sessionId, owner);
-        chatMemory.clear(sessionId);
-        sessionIndexService.remove(sessionId, owner.key());
-        return Map.of("code", 200, "message", "ok");
+    public Mono<Map<String, Object>> delete(@PathVariable("sessionId") String sessionId,
+                                            @AuthenticationPrincipal Long userId, ServerWebExchange exchange) {
+        // clear（删消息 + 摘要）与 remove（删索引）共 3 次 SQL，隔离到弹性线程
+        return Blocking.<Map<String, Object>>call(() -> {
+            SessionOwnershipService.Owner owner = ownershipService.resolve(exchange.getRequest().getHeaders(), userId);
+            ownershipService.require(sessionId, owner);
+            chatMemory.clear(sessionId);
+            sessionIndexService.remove(sessionId, owner.key());
+            return Map.of("code", 200, "message", "ok");
+        });
     }
 
     /** 越权访问会话 → 403（前端据此提示而非静默失败） */

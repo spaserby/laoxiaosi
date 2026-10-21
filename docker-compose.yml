@@ -16,7 +16,7 @@ services:
     environment:
       POSTGRES_DB: ${PG_DB:-lab_legal_kb}
       POSTGRES_USER: ${PG_USER:-postgres}
-      POSTGRES_PASSWORD: ${PG_PASSWORD:-postgres}
+      POSTGRES_PASSWORD: ${PG_PASSWORD:?PG_PASSWORD must be set}
       TZ: Asia/Shanghai
     ports:
       - "5432:5432"
@@ -38,7 +38,7 @@ services:
     # appendonly：重启不丢缓存态（否则会话全断）
     command: >
       redis-server
-      --requirepass ${REDIS_PASSWORD:-local-dev-redis}
+      --requirepass ${REDIS_PASSWORD:?REDIS_PASSWORD must be set}
       --maxmemory 256mb
       --maxmemory-policy noeviction
       --appendonly yes
@@ -48,7 +48,7 @@ services:
     volumes:
       - redis_dev_data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-local-dev-redis}", "ping"]
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:?REDIS_PASSWORD must be set}", "ping"]
       interval: 5s
       timeout: 3s
       retries: 10

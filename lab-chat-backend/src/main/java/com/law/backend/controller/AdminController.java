@@ -1,6 +1,7 @@
 package com.law.backend.controller;
 
 import com.law.backend.rag.KnowledgeImportService;
+import com.law.backend.util.Blocking;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.redisson.api.RedissonClient;
@@ -55,9 +56,15 @@ public class AdminController {
      * 已同步且未变更的条文依旧跳过，不重复消耗 embedding。
      */
     @PostMapping("/sync-vectors")
-    public Map<String, Object> syncVectors(@RequestBody(required = false) Map<String, Object> body) {
+    public Mono<Map<String, Object>> syncVectors(@RequestBody(required = false) Map<String, Object> body) {
         List<String> laws = stringList(body, "laws");
         List<String> categories = stringList(body, "categories");
+        // 闸门 trySet / 进度归零都是 Redisson 同步网络 IO：隔离到弹性线程
+        return Blocking.<Map<String, Object>>call(() -> startSync(laws, categories));
+    }
+
+    /** 触发同步（阻塞段）：抢重入闸 → 进度归零 → 弹性线程异步执行导入管道 */
+    private Map<String, Object> startSync(List<String> laws, List<String> categories) {
         String scopeDesc = describeScope(laws, categories);
         var running = redissonClient.getBucket(KEY_RUNNING);
         if (!running.trySet("1", RUNNING_TTL.toMinutes(), java.util.concurrent.TimeUnit.MINUTES)) {
@@ -115,14 +122,17 @@ public class AdminController {
      * 同步清单（勾选界面数据源）：按法名返回条数 / 已向量化条数 / 业务领域 / 效力位阶
      */
     @GetMapping("/sync-scope")
-    public Map<String, Object> syncScope() {
-        List<Map<String, Object>> rows = importService.syncScope();
-        long total = 0, synced = 0;
-        for (Map<String, Object> r : rows) {
-            total += toLong(r.get("cnt"));
-            synced += toLong(r.get("synced"));
-        }
-        return Map.of("rows", rows, "laws", rows.size(), "articles", total, "synced", synced);
+    public Mono<Map<String, Object>> syncScope() {
+        // law_article 全表 GROUP BY + 左连接：本类最重的查询，必须在弹性线程执行
+        return Blocking.<Map<String, Object>>call(() -> {
+            List<Map<String, Object>> rows = importService.syncScope();
+            long total = 0, synced = 0;
+            for (Map<String, Object> r : rows) {
+                total += toLong(r.get("cnt"));
+                synced += toLong(r.get("synced"));
+            }
+            return Map.of("rows", rows, "laws", rows.size(), "articles", total, "synced", synced);
+        });
     }
 
     private long toLong(Object o) {
@@ -133,16 +143,19 @@ public class AdminController {
      * 同步状态查询（前端轮询）：running + 分批进度 + 上次结果
      */
     @GetMapping("/sync-status")
-    public Map<String, Object> syncStatus() {
-        Map<String, Object> out = new HashMap<>();
-        out.put("running", redissonClient.getBucket(KEY_RUNNING).isExists());
-        Map<Object, Object> progress = redissonClient.getMap(KEY_PROGRESS).readAllMap();
-        out.put("processed", progress.getOrDefault("processed", "0"));
-        out.put("total", progress.getOrDefault("total", "0"));
-        Map<Object, Object> state = redissonClient.getMap(KEY_STATE).readAllMap();
-        out.put("lastResult", state.getOrDefault("lastResult", "尚未同步"));
-        out.put("lastSyncAt", parseLong(String.valueOf(state.getOrDefault("lastSyncAt", "0"))));
-        return out;
+    public Mono<Map<String, Object>> syncStatus() {
+        // Redisson 同步 API 都是网络 IO，且该接口被前端高频轮询：隔离到弹性线程
+        return Blocking.<Map<String, Object>>call(() -> {
+            Map<String, Object> out = new HashMap<>();
+            out.put("running", redissonClient.getBucket(KEY_RUNNING).isExists());
+            Map<Object, Object> progress = redissonClient.getMap(KEY_PROGRESS).readAllMap();
+            out.put("processed", progress.getOrDefault("processed", "0"));
+            out.put("total", progress.getOrDefault("total", "0"));
+            Map<Object, Object> state = redissonClient.getMap(KEY_STATE).readAllMap();
+            out.put("lastResult", state.getOrDefault("lastResult", "尚未同步"));
+            out.put("lastSyncAt", parseLong(String.valueOf(state.getOrDefault("lastSyncAt", "0"))));
+            return out;
+        });
     }
 
     private long parseLong(String s) {

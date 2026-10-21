@@ -10,8 +10,8 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 @ConfigurationProperties(prefix = "legal.ai.auth")
 public class AuthProperties {
 
-    /** JWT 签名密钥（HS256 要求 ≥32 字节；生产环境务必用环境变量注入替换默认值） */
-    private String jwtSecret = "legal-assistant-dev-jwt-secret-key-2026";
+    /** JWT 签名密钥（HS256 要求 ≥32 字节；默认留空 = 未配置，由 JwtService 判定随机生成或生产拒绝启动） */
+    private String jwtSecret = "";
 
     /** JWT 有效期（小时），过期重新登录 */
     private long jwtExpireHours = 24;

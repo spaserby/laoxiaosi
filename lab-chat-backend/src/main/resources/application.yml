@@ -30,7 +30,7 @@ spring:
       # 自建/本地 Redis（≤5.0 无账号体系）留空即可——空值由 RedisUsernameConfig 归一为
       # null（空串会被 Redisson 当作 ACL 账号发出 AUTH "" pwd，在 5.0 上连接失败）
       username: ${REDIS_USERNAME:}
-      password: ${REDIS_PASSWORD:local-dev-redis}
+      password: ${REDIS_PASSWORD:}
       # ★ VectorStore 缺失的真正原因：Redisson 的 RedissonConnectionFactory 抑制了 Spring Boot
       #   连接工厂自动装配，导致 Spring AI 向量库要求的 JedisConnectionFactory Bean 不存在；
       #   修复见 RedisVectorStoreConfig（手动注册）。client-type 在本项目无实际作用，保留无害
@@ -40,7 +40,7 @@ spring:
   datasource:
     url: jdbc:postgresql://${PG_HOST:127.0.0.1}:${PG_PORT:5432}/${PG_DB:lab_legal_kb}
     username: ${PG_USER:postgres}
-    password: ${PG_PASSWORD:postgres}
+    password: ${PG_PASSWORD:}
     driver-class-name: org.postgresql.Driver
   ai:
     openai:
@@ -220,7 +220,7 @@ legal:
     # ★ 用户认证（JWT 无状态 + Mock 短信；注册/登录/验证码重置密码）
     auth:
       jwt-secret: ${JWT_SECRET:}      # 生产必须用环境变量注入强随机值；留空时开发态启动生成随机密钥（见 JwtService），prod profile 下直接拒绝启动
-      jwt-expire-hours: 24
+      jwt-expire-hours: ${JWT_EXPIRE_HOURS:24}   # token 有效期（小时）：调小缩短泄露窗口，调大减少重登
       # 首发管理员提权（上线时注入 BOOTSTRAP_ADMIN=已注册用户名，启动即提权；首发后清除）
       bootstrap-admin: ${BOOTSTRAP_ADMIN:}
       sms-mock-echo: ${SMS_MOCK_ECHO:false}   # 验证码回显：默认关（开着等于任意手机号可被接管）；本地调试显式设 true

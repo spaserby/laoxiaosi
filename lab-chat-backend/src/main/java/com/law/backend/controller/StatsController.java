@@ -1,10 +1,12 @@
 package com.law.backend.controller;
 
 import com.law.backend.service.HomeStatsService;
+import com.law.backend.util.Blocking;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+import reactor.core.publisher.Mono;
 
 /**
  * 首页事实栏统计
@@ -21,7 +23,8 @@ public class StatsController {
     private final HomeStatsService homeStatsService;
 
     @GetMapping("/home")
-    public HomeStatsService.HomeStats home() {
-        return homeStatsService.home();
+    public Mono<HomeStatsService.HomeStats> home() {
+        // 两次全表 COUNT + Redisson 计数器读取，均为阻塞调用，隔离到弹性线程
+        return Blocking.<HomeStatsService.HomeStats>call(homeStatsService::home);
     }
 }

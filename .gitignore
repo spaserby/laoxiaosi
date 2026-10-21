@@ -34,7 +34,27 @@ _待删除_开源清理/
 # 环境变量与密钥（真实值只存服务器/本地，禁入库）
 /.env
 deploy/.env
+.env
+.env.*
+!.env.example
+!.env.template
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+id_rsa*
+id_ed25519*
+.ssh/
+*.har
+*.hprof
+*.sqlite
+*.sqlite3
+*.db
 *.dump
+__pycache__/
+*.pyc
 
 # TLS 证书（acme.sh 安装产物，含私钥，绝不入库）
 deploy/certs/*

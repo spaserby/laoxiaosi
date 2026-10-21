@@ -1,0 +1,8 @@
+#!/bin/sh
+set -eu
+root=$(git rev-parse --show-toplevel)
+cd "$root"
+if command -v python >/dev/null 2>&1; then
+    exec python scripts/privacy_guard.py push
+fi
+exec python3 scripts/privacy_guard.py push

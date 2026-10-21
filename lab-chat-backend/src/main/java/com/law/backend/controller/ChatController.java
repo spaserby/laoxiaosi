@@ -5,6 +5,7 @@ import com.law.backend.quota.QuotaService;
 import com.law.backend.service.ChatFileService;
 import com.law.backend.service.ChatService;
 import com.law.backend.service.SessionOwnershipService;
+import com.law.backend.util.Blocking;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.redisson.api.RedissonClient;
@@ -21,6 +22,8 @@ import org.springframework.web.bind.annotation.RequestPart;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ServerWebExchange;
 import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
 
 import java.util.List;
 import java.util.Map;
@@ -68,7 +71,9 @@ public class ChatController {
                             return new ChatFileService.FilePayload(part.filename(), bytes);
                         }))
                 .collectList()
-                .map(chatFileService::store);
+                // ★ store 内含 PDF/DOCX 解析（CPU 密集）+ Redis 写入 + VL caption，整体切到弹性线程；
+                //   原来的 map(store) 直接跑在 event loop 上，大附件会直接冻住该线程管辖的全部连接
+                .flatMap(list -> Blocking.call(() -> chatFileService.store(list)));
     }
 
     /**
@@ -111,12 +116,17 @@ public class ChatController {
         // ★ 日志不含问题正文：法律咨询内容属敏感个人信息，只记长度等元数据（P0 安全整改）
         log.info("收到聊天请求: sessionId={}, 问题长度={}, 附件数={}", sessionId,
                 userMessage == null ? 0 : userMessage.length(), fileIds == null ? 0 : fileIds.size());
-        // 配额上下文（登录=u:{userId}+role；游客=ip:{ip} 共享池）
-        QuotaService.QuotaCtx quotaCtx = quotaContext(userId, exchange);
-        // 会话归属：登录按 userId，匿名按 X-Guest-Key 凭据；他人会话直接 403（不再有"无主会话"）
-        SessionOwnershipService.Owner owner = ownershipService.resolve(exchange.getRequest().getHeaders(), userId);
-        ownershipService.claim(sessionId, owner);
-        return chatService.chat(sessionId, userMessage, quotaCtx, fileIds, owner.key());
+        // ★ 返回 Flux 不代表方法体异步：配额反查（userMapper）与会话归属 claim 都是阻塞 IO，
+        //   留在方法体里会在构造 Flux 之前就占住 Netty event loop。改为 defer（延迟到订阅时执行）
+        //   + subscribeOn（整段前置逻辑挪到弹性线程）；token 仍由 LLM 网络回调驱动，不长期占线程
+        return Flux.defer(() -> {
+            // 配额上下文（登录=u:{userId}+role；游客=ip:{ip} 共享池）
+            QuotaService.QuotaCtx quotaCtx = quotaContext(userId, exchange);
+            // 会话归属：登录按 userId，匿名按 X-Guest-Key 凭据；他人会话直接 403（不再有"无主会话"）
+            SessionOwnershipService.Owner owner = ownershipService.resolve(exchange.getRequest().getHeaders(), userId);
+            ownershipService.claim(sessionId, owner);
+            return chatService.chat(sessionId, userMessage, quotaCtx, fileIds, owner.key());
+        }).subscribeOn(Schedulers.boundedElastic());
     }
 
     /**
@@ -140,13 +150,16 @@ public class ChatController {
      * <p>★ 归属校验：停止是跨实例的 Redis 信号，若不校验，任何人可用他人 sessionId 打断别人的回答。
      */
     @PostMapping("/stop")
-    public Map<String, Object> stop(@RequestParam("sessionId") String sessionId,
-                                    @AuthenticationPrincipal Long userId,
-                                    ServerWebExchange exchange) {
-        ownershipService.require(sessionId,
-                ownershipService.resolve(exchange.getRequest().getHeaders(), userId));
-        chatService.stop(sessionId);
-        return Map.of("code", 200, "message", "ok");
+    public Mono<Map<String, Object>> stop(@RequestParam("sessionId") String sessionId,
+                                          @AuthenticationPrincipal Long userId,
+                                          ServerWebExchange exchange) {
+        // 归属校验（可能查库）+ Redisson 写 stop 标志均为阻塞调用，隔离到弹性线程
+        return Blocking.call(() -> {
+            ownershipService.require(sessionId,
+                    ownershipService.resolve(exchange.getRequest().getHeaders(), userId));
+            chatService.stop(sessionId);
+            return Map.of("code", 200, "message", "ok");
+        });
     }
 
     /** 越权访问会话 → 403（P0 安全整改） */

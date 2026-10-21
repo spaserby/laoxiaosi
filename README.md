@@ -72,7 +72,7 @@
 
 | 层级 | 技术 | 说明 |
 |---|---|---|
-| 语言/框架 | JDK 17 + Spring Boot 3.5.11 + Spring AI 1.1.7 | Servlet 栈 + WebFlux SSE |
+| 语言/框架 | JDK 17 + Spring Boot 3.5.11 + Spring AI 1.1.7 | WebFlux 运行于 Tomcat；WebClient 使用 Reactor Netty |
 | Chat 模型 | DeepSeek（OpenAI 兼容协议） | 五路线级联路由，配置驱动 |
 | Embedding | 阿里云百炼 DashScope | qwen3.7-text-embedding-flash（1024 维） |
 | Rerank | 百炼 gte-rerank-v2 | Cross-Encoder 精排，失败降级融合序 |
@@ -113,6 +113,8 @@ legal-assistant/
 
 ```bash
 # 1. 启动基础设施（PG + pgvector + Redis；首次启动自动执行 db/init.sql 建表并导入 2523 条法条）
+export PG_PASSWORD=your_local_pg_password REDIS_PASSWORD=your_local_redis_password
+# 请替换占位符；仓库不提供默认密码
 docker compose up -d
 # 本机已有 PG/Redis（如系统自带）时跳过本步，手动初始化：
 #   createdb lab_legal_kb && psql -U postgres -d lab_legal_kb -f db/init.sql
@@ -121,7 +123,6 @@ docker compose up -d
 # 2. 注入密钥后启动后端（yml 不含默认密钥；完整变量清单见 deploy/env.template）
 export DEEPSEEK_API_KEY=sk-xxx
 export DASHSCOPE_API_KEY=sk-xxx        # embedding + rerank + 备用多模态
-export PG_PASSWORD=postgres REDIS_PASSWORD=local-dev-redis   # 与 docker-compose.yml 默认值一致
 mvn spring-boot:run -pl lab-chat-backend
 
 # 3. 前端（另开终端）
@@ -135,6 +136,10 @@ cd super-law-frontend && npm install && npm run dev
 ```
 
 调试备选：后端内置聊天页 `http://localhost:8082`；评估门禁 `mvn test -pl lab-chat-backend`（端到端链路评估 `-Deval.e2e=true` 手动触发，消耗模型额度）。
+
+可选 ai-qc-kit 验收测试位于 `lab-chat-backend/src/eval/java`，需先在该组件仓库安装
+`kit-eval:0.1.0-SNAPSHOT`，再运行 `mvn test -pl lab-chat-backend -Peval-kit`。
+真实链路额外加 `-Deval.real=true`，会消耗模型额度；默认构建与生产镜像不依赖该本地组件。
 
 ## 法条数据来源与扩充
 

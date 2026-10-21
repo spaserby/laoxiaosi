@@ -1,11 +1,13 @@
 package com.law.backend.controller;
 
 import com.law.backend.rag.LawArticleBrowseService;
+import com.law.backend.util.Blocking;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import reactor.core.publisher.Mono;
 
 import java.util.Map;
 
@@ -36,31 +38,38 @@ public class LawArticleController {
      * @param size      每页条数
      */
     @GetMapping("/page")
-    public Map<String, Object> page(@RequestParam(defaultValue = "") String lawName,
-                                    @RequestParam(defaultValue = "") String articleNo,
-                                    @RequestParam(defaultValue = "") String keyword,
-                                    @RequestParam(defaultValue = "") String category,
-                                    @RequestParam(defaultValue = "1") int page,
-                                    @RequestParam(defaultValue = "10") int size) {
-        LawArticleBrowseService.PageResult r = browseService.page(lawName, articleNo, keyword, category, page, size);
-        return Map.of("code", 200, "data", Map.of("total", r.total(), "list", r.list()));
+    public Mono<Map<String, Object>> page(@RequestParam(defaultValue = "") String lawName,
+                                         @RequestParam(defaultValue = "") String articleNo,
+                                         @RequestParam(defaultValue = "") String keyword,
+                                         @RequestParam(defaultValue = "") String category,
+                                         @RequestParam(defaultValue = "1") int page,
+                                         @RequestParam(defaultValue = "10") int size) {
+        // ILIKE 分页 + count(*) 是同步 JDBC（模糊匹配扫全表），不能让 event loop 等
+        return Blocking.<Map<String, Object>>call(() -> {
+            LawArticleBrowseService.PageResult r = browseService.page(lawName, articleNo, keyword, category, page, size);
+            return Map.of("code", 200, "data", Map.of("total", r.total(), "list", r.list()));
+        });
     }
 
     /**
      * 分类计数（分类 chips 角标）：[{category, count}]
      */
     @GetMapping("/categories")
-    public Map<String, Object> categories() {
-        return Map.of("code", 200, "data", browseService.categories());
+    public Mono<Map<String, Object>> categories() {
+        // GROUP BY 聚合读 PG，隔离到弹性线程
+        return Blocking.<Map<String, Object>>call(() -> Map.of("code", 200, "data", browseService.categories()));
     }
 
     /**
      * 单条法条详情（引用卡按需展开：SSE 引用载荷不带正文时，前端据此补正文/章节属）
      */
     @GetMapping("/detail")
-    public Map<String, Object> detail(@RequestParam("id") long id) {
-        LawArticleBrowseService.ArticleDetail data = browseService.detail(id);
-        return data == null ? Map.of("code", 404, "message", "法条不存在")
-                : Map.of("code", 200, "data", data);
+    public Mono<Map<String, Object>> detail(@RequestParam("id") long id) {
+        // 主键查 PG，隔离到弹性线程
+        return Blocking.<Map<String, Object>>call(() -> {
+            LawArticleBrowseService.ArticleDetail data = browseService.detail(id);
+            return data == null ? Map.of("code", 404, "message", "法条不存在")
+                    : Map.of("code", 200, "data", data);
+        });
     }
 }

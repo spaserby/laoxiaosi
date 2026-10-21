@@ -74,8 +74,8 @@
         </dependency>
 
         <!--
-            保留 Tomcat 让应用运行在 Servlet 栈（而非 Netty），
-            响应式 Controller（Flux SSE）仍正常工作。
+            WebFlux 运行于嵌入式 Tomcat（TomcatReactiveWebServerFactory）。
+            Reactor Netty 仍用于 WebClient 的模型流式调用。
         -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
@@ -121,7 +121,49 @@
             <artifactId>spring-boot-starter-test</artifactId>
             <scope>test</scope>
         </dependency>
+
+        <!-- 会话记忆事务回归：独立内存数据库，不连接业务 PostgreSQL -->
+        <dependency>
+            <groupId>com.h2database</groupId>
+            <artifactId>h2</artifactId>
+            <scope>test</scope>
+        </dependency>
+
     </dependencies>
+
+    <profiles>
+        <!-- 本地评估组件需先安装；默认构建与生产镜像不依赖本机 SNAPSHOT。 -->
+        <profile>
+            <id>eval-kit</id>
+            <dependencies>
+                <dependency>
+                    <groupId>io.github.spaserby</groupId>
+                    <artifactId>kit-eval</artifactId>
+                    <version>0.1.0-SNAPSHOT</version>
+                    <scope>test</scope>
+                </dependency>
+            </dependencies>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.codehaus.mojo</groupId>
+                        <artifactId>build-helper-maven-plugin</artifactId>
+                        <version>3.3.0</version>
+                        <executions>
+                            <execution>
+                                <id>eval-kit-test-sources</id>
+                                <phase>generate-test-sources</phase>
+                                <goals><goal>add-test-source</goal></goals>
+                                <configuration>
+                                    <sources><source>src/eval/java</source></sources>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
 
     <build>
         <plugins>

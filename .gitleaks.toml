@@ -1,0 +1,62 @@
+title = "Legal assistant privacy guard"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "public-ipv4-address"
+description = "Review public server addresses before publishing"
+regex = '''\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b'''
+[[rules.allowlists]]
+description = "Local, private, and documentation networks"
+regexTarget = "match"
+regexes = ['''^(?:0\.|10\.|127\.|169\.254\.|172\.(?:1[6-9]|2[0-9]|3[01])\.|192\.168\.|192\.0\.2\.|198\.51\.100\.|203\.0\.113\.|255\.255\.255\.255$)''']
+
+[[rules]]
+id = "personal-machine-path"
+description = "Personal account names in absolute paths"
+regex = '''(?i)(?:[a-z]:[\\/]Users[\\/][a-z0-9_.-]+|/(?:home|Users)/[a-z0-9_.-]+)'''
+[[rules.allowlists]]
+description = "Explicit example user names"
+regexTarget = "match"
+regexes = ['''(?i)[\\/](?:user|username|example|runner|public)$''']
+
+[[rules]]
+id = "project-literal-credential"
+description = "Literal application credentials, including low entropy passwords"
+regex = '''(?im)^[ \t]*["']?(?:[a-z0-9]+[_-])*(?:password|passwd|api[_-]?key|jwt[_-]?secret|access[_-]?key[_-]?(?:id|secret)?|auth[_-]?token)["']?[ \t]*[:=][ \t]*["']?([^\s"'`,;<>|]+)'''
+secretGroup = 1
+[[rules.allowlists]]
+description = "Environment references and explicit placeholders only"
+regexTarget = "secret"
+regexes = ['''^\$''', '''(?i)^(?:|null|none|true|false|changeme|change[-_]me(?:[-_].*)?|replace[-_].*|your[-_].*|example[-_].*|test[-_].*|dummy[-_].*|placeholder)$''']
+
+[[rules]]
+id = "source-literal-credential"
+description = "Quoted credential assignments in source code"
+regex = '''(?i)(?:password|passwd|jwt[_-]?secret|api[_-]?key|access[_-]?key(?:[_-]?secret)?|auth[_-]?token)["']?[ \t]*[:=][ \t]*["']([^"'$\r\n]+)["']'''
+secretGroup = 1
+[[rules.allowlists]]
+description = "Explicit synthetic values"
+regexTarget = "secret"
+regexes = ['''(?i)^(?:changeme|change[-_]me(?:[-_].*)?|replace[-_].*|your[-_].*|example[-_].*|test[-_].*|dummy[-_].*|placeholder)$''']
+
+[[rules]]
+id = "chinese-credential-label"
+description = "Passwords and tokens copied into Chinese notes"
+regex = '''(?:密码|口令|密钥|令牌)[ \t]*[：:=][ \t]*["'\x60]?([A-Za-z0-9_+/!@#$%^&*().=-]{6,})'''
+secretGroup = 1
+[[rules.allowlists]]
+description = "Explicit placeholders"
+regexTarget = "secret"
+regexes = ['''(?i)^(?:changeme|change[-_]me(?:[-_].*)?|replace[-_].*|your[-_].*|example[-_].*|test[-_].*|dummy[-_].*|placeholder|REDACTED)$''']
+
+[[rules]]
+id = "credential-environment-fallback"
+description = "Nonempty credential defaults inside environment references"
+regex = '''\$\{[A-Z0-9_]*(?:PASSWORD|SECRET|API_KEY|ACCESS_KEY|TOKEN)[A-Z0-9_]*:([^}?][^}]*)\}'''
+secretGroup = 1
+[[rules.allowlists]]
+description = "Explicit placeholder defaults"
+regexTarget = "secret"
+regexes = ['''(?i)^(?:changeme|change[-_]me(?:[-_].*)?|replace[-_].*|your[-_].*|example[-_].*|test[-_].*|dummy[-_].*|placeholder)$''']

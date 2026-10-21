@@ -1,6 +1,7 @@
 package com.law.backend.auth;
 
 import com.law.backend.quota.QuotaService;
+import com.law.backend.util.Blocking;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
@@ -14,6 +15,7 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ServerWebExchange;
+import reactor.core.publisher.Mono;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -57,37 +59,44 @@ public class AuthController {
      * 注册：用户名+密码+手机号+验证码（验证码验真手机号，保证重置通道可用）
      */
     @PostMapping("/register")
-    public AuthService.AuthResult register(@RequestBody RegisterRequest request) {
-        return authService.register(request.username(), request.password(), request.phone(), request.code());
+    public Mono<AuthService.AuthResult> register(@RequestBody RegisterRequest request) {
+        // 查重 2 次 + 写库 + BCrypt 哈希：均为阻塞操作，隔离到弹性线程
+        return Blocking.call(() -> authService.register(request.username(), request.password(), request.phone(), request.code()));
     }
 
     /**
      * 登录：用户名+密码 → JWT + 用户信息
      */
     @PostMapping("/login")
-    public AuthService.AuthResult login(@RequestBody LoginRequest request) {
-        return authService.login(request.username(), request.password());
+    public Mono<AuthService.AuthResult> login(@RequestBody LoginRequest request) {
+        // ★ BCrypt 校验是刻意慢（100ms 级）+ 查库：绝不能跑在 event loop 上
+        return Blocking.call(() -> authService.login(request.username(), request.password()));
     }
 
     /**
      * 发送验证码（Mock 短信；sms-mock-echo=true 时响应回显 devCode 供开发自测，生产关闭）
      */
     @PostMapping("/sms-code")
-    public Map<String, Object> sendSmsCode(@RequestBody SmsCodeRequest request) {
-        String devCode = smsService.sendCode(request.phone());
-        Map<String, Object> result = new HashMap<>();
-        result.put("sent", true);
-        result.put("devCode", devCode == null ? "" : devCode);
-        return result;
+    public Mono<Map<String, Object>> sendSmsCode(@RequestBody SmsCodeRequest request) {
+        // 验证码写 Redis + 限流计数，均为阻塞网络 IO
+        return Blocking.<Map<String, Object>>call(() -> {
+            String devCode = smsService.sendCode(request.phone());
+            Map<String, Object> result = new HashMap<>();
+            result.put("sent", true);
+            result.put("devCode", devCode == null ? "" : devCode);
+            return result;
+        });
     }
 
     /**
      * 重置密码：手机号+验证码验身份 → 新密码
      */
     @PostMapping("/reset-password")
-    public Map<String, Object> resetPassword(@RequestBody ResetPasswordRequest request) {
-        authService.resetPassword(request.phone(), request.code(), request.newPassword());
-        return Map.of("ok", true);
+    public Mono<Map<String, Object>> resetPassword(@RequestBody ResetPasswordRequest request) {
+        return Blocking.<Map<String, Object>>call(() -> {
+            authService.resetPassword(request.phone(), request.code(), request.newPassword());
+            return Map.of("ok", true);
+        });
     }
 
     /**
@@ -95,62 +104,71 @@ public class AuthController {
      * @AuthenticationPrincipal 直接注入；匿名时 userId 为 null → 401）
      */
     @GetMapping("/me")
-    public ResponseEntity<?> me(@AuthenticationPrincipal Long userId) {
+    public Mono<ResponseEntity<?>> me(@AuthenticationPrincipal Long userId) {
         if (userId == null) {
-            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(Map.of("message", "未登录"));
+            return Mono.just(ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(Map.of("message", "未登录")));
         }
-        return ResponseEntity.ok(authService.me(userId));
+        return Blocking.<ResponseEntity<?>>call(() -> ResponseEntity.ok(authService.me(userId)));
     }
 
     /**
      * 律师模式开关：需登录；开启前的免责声明确认由前端弹窗承载
      */
     @PutMapping("/lawyer-mode")
-    public ResponseEntity<?> lawyerMode(@AuthenticationPrincipal Long userId,
-                                        @RequestBody LawyerModeRequest request) {
+    public Mono<ResponseEntity<?>> lawyerMode(@AuthenticationPrincipal Long userId,
+                                              @RequestBody LawyerModeRequest request) {
         if (userId == null) {
-            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(Map.of("message", "未登录"));
+            return Mono.just(ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(Map.of("message", "未登录")));
         }
-        try {
-            return ResponseEntity.ok(authService.setLawyerMode(userId, request.enabled()));
-        } catch (IllegalArgumentException e) {
-            return ResponseEntity.badRequest().body(Map.of("message", e.getMessage()));
-        }
+        // 读用户 + 回写角色：两次 SQL
+        return Blocking.<ResponseEntity<?>>call(() -> {
+            try {
+                return ResponseEntity.ok(authService.setLawyerMode(userId, request.enabled()));
+            } catch (IllegalArgumentException e) {
+                return ResponseEntity.badRequest().body(Map.of("message", e.getMessage()));
+            }
+        });
     }
 
     /**
      * 头像选择：登录用户把选择编号存进 user 表，跨设备/浏览器永久生效
      */
     @PutMapping("/avatar")
-    public ResponseEntity<?> avatar(@AuthenticationPrincipal Long userId,
-                                    @RequestBody AvatarRequest request) {
+    public Mono<ResponseEntity<?>> avatar(@AuthenticationPrincipal Long userId,
+                                          @RequestBody AvatarRequest request) {
         if (userId == null) {
-            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(Map.of("message", "未登录"));
+            return Mono.just(ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(Map.of("message", "未登录")));
         }
-        try {
-            return ResponseEntity.ok(authService.setAvatar(userId, request.avatar()));
-        } catch (IllegalArgumentException e) {
-            return ResponseEntity.badRequest().body(Map.of("message", e.getMessage()));
-        }
+        // 读用户 + 回写头像：两次 SQL
+        return Blocking.<ResponseEntity<?>>call(() -> {
+            try {
+                return ResponseEntity.ok(authService.setAvatar(userId, request.avatar()));
+            } catch (IllegalArgumentException e) {
+                return ResponseEntity.badRequest().body(Map.of("message", e.getMessage()));
+            }
+        });
     }
 
     /**
      * 当前配额状态
      */
     @GetMapping("/quota")
-    public QuotaService.QuotaState quota(@AuthenticationPrincipal Long userId, ServerWebExchange exchange) {
-        QuotaService.QuotaCtx ctx;
-        if (userId != null) {
-            try {
-                String role = authService.me(userId).role();
-                ctx = new QuotaService.QuotaCtx(QuotaService.tierOf(role), "u:" + userId);
-            } catch (Exception e) {
+    public Mono<QuotaService.QuotaState> quota(@AuthenticationPrincipal Long userId, ServerWebExchange exchange) {
+        // 角色反查（查库）+ 配额读取（Redis）均为阻塞调用
+        return Blocking.<QuotaService.QuotaState>call(() -> {
+            QuotaService.QuotaCtx ctx;
+            if (userId != null) {
+                try {
+                    String role = authService.me(userId).role();
+                    ctx = new QuotaService.QuotaCtx(QuotaService.tierOf(role), "u:" + userId);
+                } catch (Exception e) {
+                    ctx = guestCtx(exchange);
+                }
+            } else {
                 ctx = guestCtx(exchange);
             }
-        } else {
-            ctx = guestCtx(exchange);
-        }
-        return quotaService.state(ctx);
+            return quotaService.state(ctx);
+        });
     }
 
     private QuotaService.QuotaCtx guestCtx(ServerWebExchange exchange) {
