@@ -40,7 +40,7 @@ export const useChatStore = defineStore('chat', {
 
   actions: {
     ensureSession() {
-      if (!this.currentSessionId) this.currentSessionId = this.createSessionId('附件咨询')
+      if (!this.currentSessionId) this.currentSessionId = this.createSessionId('新对话')
       return this.currentSessionId
     },
     async refreshAttachments(sessionId = this.currentSessionId) {
@@ -106,6 +106,10 @@ export const useChatStore = defineStore('chat', {
       // 后续 push/属性写入不触发重渲染（首轮流式"结束时才一次性显示"的根因）
       if (!this.messages[sid]) this.messages[sid] = []
       const msgs = this.messages[sid]
+      const session = this.sessions.find(s => s.sessionId === sid)
+      if (!msgs.some(m => m.role === 'user') && session && ['新对话', '附件咨询'].includes(session.title)) {
+        session.title = Array.from(text.trim()).slice(0, 20).join('')
+      }
       const userMsg = { role: 'user', content: text }
       // 附件卡数据（消息泡展示文件名/字数）
       if (files && files.length) {
@@ -280,7 +284,7 @@ export const useChatStore = defineStore('chat', {
     /** 首轮发送时本地生成会话 id，并乐观插入侧栏列表 */
     createSessionId(firstMessage) {
       const sid = 's-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8)
-      const title = firstMessage.length > 20 ? firstMessage.slice(0, 20) : firstMessage
+      const title = Array.from(firstMessage.trim()).slice(0, 20).join('') || '新对话'
       this.sessions.unshift({ sessionId: sid, title, createdAt: Date.now(), updatedAt: Date.now() })
       return sid
     }

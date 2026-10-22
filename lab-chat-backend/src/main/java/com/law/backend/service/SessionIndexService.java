@@ -22,6 +22,7 @@ public class SessionIndexService {
 
     /** 标题最大长度（首条用户消息截断） */
     private static final int TITLE_MAX = 20;
+    public static final String DEFAULT_TITLE = "新对话";
 
     private final com.law.backend.memory.SessionMapper sessionMapper;
 
@@ -36,13 +37,19 @@ public class SessionIndexService {
     public void touch(String sessionId, String firstMessage, String ownerKey) {
         try {
             long now = System.currentTimeMillis();
-            String title = (firstMessage == null || firstMessage.isBlank())
-                    ? "新对话"
-                    : (firstMessage.length() > TITLE_MAX ? firstMessage.substring(0, TITLE_MAX) : firstMessage);
+            String title = titleOf(firstMessage);
             sessionMapper.upsert(sessionId, title, now, now, ownerKey);
         } catch (Exception e) {
             log.warn("会话索引写入失败（不影响对话）: sessionId={}, error={}", sessionId, e.getMessage());
         }
+    }
+
+    /** 标题用于列表显示；按 Unicode 字符截取，避免把代理对截成乱码。 */
+    public static String titleOf(String message) {
+        if (message == null || message.isBlank()) return DEFAULT_TITLE;
+        String text = message.strip();
+        int length = Math.min(TITLE_MAX, text.codePointCount(0, text.length()));
+        return text.substring(0, text.offsetByCodePoints(0, length));
     }
 
     /**

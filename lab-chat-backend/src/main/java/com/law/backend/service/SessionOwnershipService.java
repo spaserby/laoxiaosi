@@ -73,10 +73,15 @@ public class SessionOwnershipService {
 
     /** 首次上传也建立有主会话；并发登记后再次核验，失败不静默降级。 */
     public void register(String sessionId, Owner owner) {
+        register(sessionId, owner, null);
+    }
+
+    /** 普通问答直接使用首条问题；上传预建会话使用中性占位，首次提问可转正。 */
+    public void register(String sessionId, Owner owner, String firstMessage) {
         if (ANON.equals(owner.key())) throw new SessionAccessDeniedException();
         claim(sessionId, owner);
         long now = System.currentTimeMillis();
-        sessionMapper.upsert(sessionId, "附件咨询", now, now, owner.key());
+        sessionMapper.upsert(sessionId, SessionIndexService.titleOf(firstMessage), now, now, owner.key());
         require(sessionId, owner);
     }
 

@@ -153,7 +153,7 @@ public class ChatFileService {
             if (ids != null && !ids.isEmpty()) throw new SessionAccessDeniedException();
             return new Turn(List.of(), List.of(), "");
         }
-        ownership.register(sessionId, owner);
+        ownership.register(sessionId, owner, question);
         var scope = scope(sessionId, owner, false);
         if (ids != null && ids.size() > properties.getMaxFilesPerSession()) throw new IllegalArgumentException("本轮附件过多");
         List<AttachmentRepository.FileRecord> files = ids == null || ids.isEmpty() ? repository.list(scope)

@@ -21,7 +21,10 @@ public interface SessionMapper {
 
     @Insert("insert into chat_session(session_id, title, created_at, updated_at, owner_key)"
             + " values(#{sessionId}, #{title}, #{createdAt}, #{updatedAt}, #{ownerKey})"
-            + " on conflict (session_id) do update set updated_at = excluded.updated_at"
+            + " on conflict (session_id) do update set updated_at = excluded.updated_at,"
+            + " title = case when chat_session.title in ('新对话','附件咨询')"
+            + " and not exists(select 1 from chat_message m where m.session_id = chat_session.session_id)"
+            + " then excluded.title else chat_session.title end"
             + " where chat_session.owner_key = excluded.owner_key")
     int upsert(@Param("sessionId") String sessionId, @Param("title") String title,
                @Param("createdAt") long createdAt, @Param("updatedAt") long updatedAt,
