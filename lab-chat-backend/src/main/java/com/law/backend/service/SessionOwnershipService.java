@@ -57,17 +57,27 @@ public class SessionOwnershipService {
      * 同一浏览器的匿名转登录允许升级；其余越权拒绝。
      */
     public void claim(String sessionId, Owner owner) {
+        if (sessionId == null || !sessionId.matches("[A-Za-z0-9_-]{1,64}")) throw new IllegalArgumentException("会话标识无效");
         String cur = sessionMapper.findOwnerKey(sessionId);
         if (cur == null || cur.equals(owner.key())) {
             return;
         }
         if (owner.guestKey() != null && cur.equals("g:" + owner.guestKey()) && owner.key().startsWith("u:")) {
-            sessionMapper.setOwnerKey(sessionId, owner.key());
+            if (sessionMapper.upgradeOwner(sessionId, owner.key(), cur) != 1) require(sessionId, owner);
             log.info("会话归属由匿名升级为登录: sessionId={}", sessionId);
             return;
         }
         log.warn("会话归属冲突已拒绝: sessionId={}, requester={}", sessionId, owner.key());
         throw new SessionAccessDeniedException();
+    }
+
+    /** 首次上传也建立有主会话；并发登记后再次核验，失败不静默降级。 */
+    public void register(String sessionId, Owner owner) {
+        if (ANON.equals(owner.key())) throw new SessionAccessDeniedException();
+        claim(sessionId, owner);
+        long now = System.currentTimeMillis();
+        sessionMapper.upsert(sessionId, "附件咨询", now, now, owner.key());
+        require(sessionId, owner);
     }
 
     /** 读/删/停止生成入口调用：必须是本会话主人；无凭据方（ANON）一律不可读 */

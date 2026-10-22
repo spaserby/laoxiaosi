@@ -3,7 +3,7 @@ package com.law.backend.service;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
-import org.redisson.api.RedissonClient;
+import com.law.backend.attachment.AttachmentParser;
 
 import java.awt.image.BufferedImage;
 
@@ -15,16 +15,15 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 class ChatFileServiceFilterTest {
 
-    private ChatFileService newService() {
+    private AttachmentParser newService() {
         FileProperties props = new FileProperties();
-        return new ChatFileService(Mockito.mock(RedissonClient.class), props,
-                Mockito.mock(ImageCaptionService.class));
+        return new AttachmentParser(props, Mockito.mock(ImageCaptionService.class));
     }
 
     @Test
     @DisplayName("过小图片（图标/分隔线）被过滤")
     void tinyImageRejected() {
-        ChatFileService svc = newService();
+        AttachmentParser svc = newService();
         assertFalse(svc.meaningful(new BufferedImage(32, 32, BufferedImage.TYPE_INT_RGB)));
         assertFalse(svc.meaningful(new BufferedImage(63, 200, BufferedImage.TYPE_INT_RGB)));
     }
@@ -32,7 +31,7 @@ class ChatFileServiceFilterTest {
     @Test
     @DisplayName("纯色背景图被过滤，有内容图通过")
     void solidColorRejected() {
-        ChatFileService svc = newService();
+        AttachmentParser svc = newService();
         BufferedImage solid = new BufferedImage(200, 200, BufferedImage.TYPE_INT_RGB);
         for (int x = 0; x < 200; x++) for (int y = 0; y < 200; y++) solid.setRGB(x, y, 0xFFFFFF);
         assertFalse(svc.meaningful(solid));

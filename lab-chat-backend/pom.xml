@@ -51,6 +51,12 @@
     <description>聊天演示：SSE 流式 + 停止生成 + Redis 会话记忆 + 工具调用</description>
 
     <dependencies>
+        <!-- 附件 token 预算显式依赖；供应商 tokenizer 不同时使用保守系数。 -->
+        <dependency>
+            <groupId>com.knuddels</groupId>
+            <artifactId>jtokkit</artifactId>
+            <version>1.1.0</version>
+        </dependency>
         <!--
             Spring AI OpenAI 兼容 Starter：
             阿里云 MaaS Token 套餐走 OpenAI 兼容协议，通过 spring.ai.openai.base-url

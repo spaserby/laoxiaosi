@@ -15,10 +15,14 @@ server:
 spring:
   application:
     name: backend
-  # ★ WebFlux multipart 单 part 内存上限（默认 256KB，超过即
-  #   DataBufferLimitException → 图片上传 500 的根因）；110MB 覆盖单文件 100MB 上限（对标 DeepSeek）
+  # 普通响应/模型 JSON 的 codec 限额；文件使用磁盘 spool + 流式写入，不 join 正文。
   codec:
-    max-in-memory-size: 110MB
+    max-in-memory-size: 4MB
+  webflux:
+    multipart:
+      max-in-memory-size: 256KB
+      max-disk-usage-per-part: 20MB
+      max-parts: 3
 
   # ==================== 本地配置 ====================
   # Redis 连接（redisson-spring-boot-starter 自动读取该配置创建 RedissonClient）
@@ -238,14 +242,31 @@ legal:
         template-code: ${ALIYUN_SMS_TEMPLATE:100001}
         # 个人版短信认证（dypnsapi）：验证码由阿里云生成+核验，模板参数固定 {"code":"##code##"} 代码内置
         endpoint: dypnsapi.aliyuncs.com
-    # ★ 会话附件多模态配置（四坑防御限额：token/噪声/caption 成本/超长文档）
+    # 私有会话附件（异步解析、结构分块、检索、覆盖与预算；详见 docs/attachments.md）
     files:
       max-images-per-turn: 8     # 单轮图片总数上限（qwen-vl 单图约千级 token）
-      max-images-per-doc: 6      # 单文档抽图上限
-      caption-limit: 3           # 每文档 caption 限流（并行 + 超时降级）
-      caption-timeout-seconds: 8
+      max-images-per-doc: 6      # DOCX 图片 OCR 上限（PDF 扫描页逐页转录）
       min-image-px: 64           # 最小有效边长（图标/分隔线噪声过滤）
-      max-pages: 30              # PDF 最大处理页数
+      max-pages: ${ATTACHMENT_MAX_PAGES:200} # 超限明确拒绝，不截取前 N 页
+      storage-dir: ${ATTACHMENT_STORAGE_DIR:./data/private-attachments}
+      max-file-bytes: ${ATTACHMENT_MAX_FILE_BYTES:20971520}
+      max-image-bytes: ${ATTACHMENT_MAX_IMAGE_BYTES:8388608}
+      max-text-chars: ${ATTACHMENT_MAX_TEXT_CHARS:200000}
+      queue-capacity: 6          # 单解析线程 + 有界队列，适配小内存服务器
+      processing-timeout-seconds: 180
+      ttl-hours: 24
+      ocr-enabled: ${ATTACHMENT_OCR_ENABLED:true}
+      child-tokens: 512          # embedding tokenizer 保守估算；须用金标调整
+      overlap-tokens: 128        # 仅硬切重叠
+      parent-tokens: 1536
+      attachment-tokens: ${ATTACHMENT_CONTEXT_BUDGET:8000}
+      context-window-tokens: ${CHAT_CONTEXT_WINDOW:32768} # 不得大于任何可路由模型窗口
+      output-reserve-tokens: 4096
+      safety-reserve-tokens: 2048
+      image-reserve-tokens: 8192
+      chat-token-safety-factor: 1.5
+      embedding-token-safety-factor: 1.25
+      embedding-version: ${ATTACHMENT_EMBEDDING_VERSION:qwen3.7-text-embedding-flash}
       vl-model: deepseek-v4-flash   # 多模态模型（需支持视觉输入）
       vl-provider: deepseek      # 模型所属端点（与 vl-model 同族；换 qwen-vl-max 时改回 vl）
     # ★ 分层配额（速率限流 + 周期额度分离；-1 = 不限量；limit + period 决定口径）

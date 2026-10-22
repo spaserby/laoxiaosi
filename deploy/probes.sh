@@ -49,5 +49,9 @@ if [ "${BASE#https}" != "$BASE" ]; then
   if [ "$code" = "301" ] || [ "$code" = "308" ]; then ok http-redirect; else bad http-redirect "HTTP $code（期望 301 跳 HTTPS）"; fi
 fi
 
+# 私有附件接口无凭据必须拒绝，不能被静态站点 fallback 返回 HTML。
+code=$(curl $CURL_K -s -o /dev/null -w '%{http_code}' "$BASE/chat/files?sessionId=synthetic-probe")
+if [ "$code" = "403" ]; then ok attachment-auth-guard; else bad attachment-auth-guard "HTTP $code（期望403）"; fi
+
 echo "---- probes: $pass passed, $fail failed ----"
 [ "$fail" -eq 0 ]

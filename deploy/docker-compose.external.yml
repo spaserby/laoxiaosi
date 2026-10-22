@@ -16,6 +16,10 @@ services:
     restart: always
     # 外部 PG/Redis 连接信息全部来自 .env（本文件不再覆盖容器内地址）
     env_file: .env
+    environment:
+      ATTACHMENT_STORAGE_DIR: /app/private-attachments
+    volumes:
+      - attachment_data:/app/private-attachments
     expose:
       - "8082"
 
@@ -39,3 +43,6 @@ services:
       - "443:443"
     depends_on:
       - backend
+
+volumes:
+  attachment_data:

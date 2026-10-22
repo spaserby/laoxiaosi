@@ -14,6 +14,7 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
  * </pre>
  */
 @SpringBootApplication
+@org.springframework.scheduling.annotation.EnableScheduling
 public class BackendApplication {
 
     public static void main(String[] args) {

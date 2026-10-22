@@ -63,3 +63,7 @@ deploy/certs/*
 # 个人内容（不进仓库，本地保留）：章节化博客与面试备考资料
 /blog/
 /interview/
+
+# 用户上传原件与本地解析产物：始终私有
+/data/private-attachments/
+/lab-chat-backend/data/private-attachments/

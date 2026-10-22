@@ -4,10 +4,7 @@ import lombok.Data;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
 /**
- * 会话附件配置：图片限额/过滤/caption/VL 模型
- * <p>
- * 四个限额对应四个工程坑：token 爆炸（轮/文档图片上限）、无意义图噪声（尺寸/纯色过滤）、
- * caption 成本（限流并行 + 超时降级）、扫描版 PDF（页数上限防超长文档）。
+ * 私有附件解析、存储、检索、审查与全局上下文预算配置。
  */
 @Data
 @ConfigurationProperties(prefix = "legal.ai.files")
@@ -16,20 +13,46 @@ public class FileProperties {
     /** 单轮咨询图片总数上限（token 成本闸：qwen-vl 单图约千级 token） */
     private int maxImagesPerTurn = 8;
 
-    /** 单文档抽图上限（超出丢弃并提示） */
+    /** DOCX 图片 OCR 上限（超出明确提示部分覆盖，不影响 PDF 逐页 OCR） */
     private int maxImagesPerDoc = 6;
-
-    /** 每文档生成 caption 的图片数上限（成本闸：其余图 caption 留空） */
-    private int captionLimit = 3;
-
-    /** 单张 caption 超时秒数（超时降级为空 caption，不阻断上传） */
-    private int captionTimeoutSeconds = 8;
 
     /** 最小有效边长 px（小于视为图标/分隔线噪声丢弃） */
     private int minImagePx = 64;
 
-    /** PDF 最大处理页数（防超长文档抽图爆炸） */
-    private int maxPages = 30;
+    /** PDF 接受上限（超过拒绝整份文档，不截取前缀） */
+    private int maxPages = 200;
+
+    /** 私有目录；容器部署必须挂载持久卷。目录名不来自上传文件名。 */
+    private String storageDir = "./data/private-attachments";
+    private long maxFileBytes = 20L * 1024 * 1024;
+    private long maxImageBytes = 8L * 1024 * 1024;
+    private int maxImagePixels = 16_000_000;
+    private int maxTextChars = 200_000;
+    private int maxFilesPerSession = 3;
+    private int queueCapacity = 6;
+    private int processingTimeoutSeconds = 180;
+    private int ttlHours = 24;
+    private boolean ocrEnabled = true;
+    private int ocrMaxTokens = 8192;
+    private int ocrTimeoutSeconds = 45;
+    private int embeddingTimeoutSeconds = 30;
+    private int childTokens = 512;
+    private int overlapTokens = 128;
+    private int parentTokens = 1536;
+    private int recallCandidates = 24;
+    private int retrievalTopK = 6;
+    private int attachmentTokens = 8000;
+    /** 保守的部署下限，须不大于任何可路由模型的实际窗口。 */
+    private int contextWindowTokens = 32768;
+    private int outputReserveTokens = 4096;
+    private int safetyReserveTokens = 2048;
+    private int imageReserveTokens = 8192;
+    /** CL100K 是估算；chat 与 embedding 分开配置，不能声称等于供应商 tokenizer。 */
+    private double chatTokenSafetyFactor = 1.5;
+    private double embeddingTokenSafetyFactor = 1.25;
+    private String embeddingVersion = "qwen3.7-text-embedding-flash";
+    private int maxReviewSections = 64;
+    private int reviewOutputTokens = 600;
 
     /** 多模态模型名（需支持视觉输入；当前 deepseek-v4-flash，备选 qwen-vl-max） */
     private String vlModel = "deepseek-v4-flash";

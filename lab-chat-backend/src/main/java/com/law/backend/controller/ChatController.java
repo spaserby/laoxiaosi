@@ -55,25 +55,49 @@ public class ChatController {
     private final com.law.backend.service.SessionOwnershipService ownershipService;
 
     /**
-     * 文档上传：校验+解析+暂存 Redis 24h，返回 fileId 列表供 stream 携带
+     * 文档流式写入私有目录，绑定会话并异步解析；返回 QUEUED 元数据供轮询。
      * <p>WebFlux 栈文件参数必须用反应式 {@link FilePart}（Servlet 的 MultipartFile
      * 在 reactive 运行时无 resolver，报 415 Unsupported Media Type）
      */
     @PostMapping(value = "/files", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public reactor.core.publisher.Mono<List<ChatFileService.UploadedFile>> uploadFiles(
-            @RequestPart("files") List<org.springframework.http.codec.multipart.FilePart> parts) {
-        return reactor.core.publisher.Flux.fromIterable(parts)
-                .concatMap(part -> org.springframework.core.io.buffer.DataBufferUtils.join(part.content())
-                        .map(buf -> {
-                            byte[] bytes = new byte[buf.readableByteCount()];
-                            buf.read(bytes);
-                            org.springframework.core.io.buffer.DataBufferUtils.release(buf);
-                            return new ChatFileService.FilePayload(part.filename(), bytes);
-                        }))
-                .collectList()
-                // ★ store 内含 PDF/DOCX 解析（CPU 密集）+ Redis 写入 + VL caption，整体切到弹性线程；
-                //   原来的 map(store) 直接跑在 event loop 上，大附件会直接冻住该线程管辖的全部连接
-                .flatMap(list -> Blocking.call(() -> chatFileService.store(list)));
+            @RequestPart("files") List<org.springframework.http.codec.multipart.FilePart> parts,
+            @RequestParam String sessionId, @AuthenticationPrincipal Long userId, ServerWebExchange exchange) {
+        if (parts.isEmpty() || parts.size() > 3) return Mono.error(new IllegalArgumentException("一次上传 1 至 3 个附件"));
+        var owner = ownershipService.resolve(exchange.getRequest().getHeaders(), userId);
+        var uploaded = new java.util.concurrent.CopyOnWriteArrayList<ChatFileService.UploadedFile>();
+        return Flux.fromIterable(parts).concatMap(part -> chatFileService.upload(sessionId, owner, part))
+                .doOnNext(uploaded::add).collectList()
+                .onErrorResume(error -> Blocking.run(() -> uploaded.forEach(file -> chatFileService.delete(sessionId, owner, file.fileId())))
+                        .onErrorComplete().then(Mono.error(error)))
+                .doFinally(signal -> {
+                    if (signal == reactor.core.publisher.SignalType.CANCEL) Schedulers.boundedElastic().schedule(() ->
+                            uploaded.forEach(file -> chatFileService.delete(sessionId, owner, file.fileId())));
+                });
+    }
+
+    @GetMapping("/files")
+    public Mono<List<ChatFileService.UploadedFile>> files(@RequestParam String sessionId,
+            @AuthenticationPrincipal Long userId, ServerWebExchange exchange) {
+        return Blocking.call(() -> chatFileService.list(sessionId, ownershipService.resolve(exchange.getRequest().getHeaders(), userId)));
+    }
+
+    @PostMapping("/files/{fileId}/retry")
+    public Mono<ChatFileService.UploadedFile> retryFile(@org.springframework.web.bind.annotation.PathVariable String fileId,
+            @RequestParam String sessionId, @AuthenticationPrincipal Long userId, ServerWebExchange exchange) {
+        return Blocking.call(() -> chatFileService.retry(sessionId, ownershipService.resolve(exchange.getRequest().getHeaders(), userId), fileId));
+    }
+
+    @org.springframework.web.bind.annotation.DeleteMapping("/files/{fileId}")
+    public Mono<Map<String, Boolean>> deleteFile(@org.springframework.web.bind.annotation.PathVariable String fileId,
+            @RequestParam String sessionId, @AuthenticationPrincipal Long userId, ServerWebExchange exchange) {
+        return Blocking.call(() -> { chatFileService.delete(sessionId, ownershipService.resolve(exchange.getRequest().getHeaders(), userId), fileId); return Map.of("deleted", true); });
+    }
+
+    @GetMapping("/files/{fileId}/source")
+    public Mono<Map<String, String>> fileSource(@org.springframework.web.bind.annotation.PathVariable String fileId,
+            @RequestParam String sessionId, @RequestParam int parentId, @AuthenticationPrincipal Long userId, ServerWebExchange exchange) {
+        return Blocking.call(() -> Map.of("text", chatFileService.source(sessionId, ownershipService.resolve(exchange.getRequest().getHeaders(), userId), fileId, parentId)));
     }
 
     /**
@@ -89,11 +113,11 @@ public class ChatController {
                                                 @RequestParam(required = false) List<String> fileIds,
                                                 @AuthenticationPrincipal Long userId,
                                                 ServerWebExchange exchange) {
-        return streamInternal(sessionId, userMessage, fileIds, userId, exchange);
+        return streamInternal(sessionId, userMessage, fileIds, "qa", userId, exchange);
     }
 
     /** POST 流式聊天请求体（会话 ID + 问题 + 附件） */
-    public record StreamRequest(String sessionId, String userMessage, List<String> fileIds) {
+    public record StreamRequest(String sessionId, String userMessage, List<String> fileIds, String mode) {
     }
 
     /**
@@ -106,12 +130,12 @@ public class ChatController {
     public Flux<ServerSentEvent<String>> streamPost(@RequestBody StreamRequest request,
                                                      @AuthenticationPrincipal Long userId,
                                                      ServerWebExchange exchange) {
-        return streamInternal(request.sessionId(), request.userMessage(), request.fileIds(),
+        return streamInternal(request.sessionId(), request.userMessage(), request.fileIds(), request.mode(),
                 userId, exchange);
     }
 
     private Flux<ServerSentEvent<String>> streamInternal(String sessionId, String userMessage,
-                                                         List<String> fileIds, Long userId,
+                                                         List<String> fileIds, String mode, Long userId,
                                                          ServerWebExchange exchange) {
         // ★ 日志不含问题正文：法律咨询内容属敏感个人信息，只记长度等元数据（P0 安全整改）
         log.info("收到聊天请求: sessionId={}, 问题长度={}, 附件数={}", sessionId,
@@ -120,12 +144,14 @@ public class ChatController {
         //   留在方法体里会在构造 Flux 之前就占住 Netty event loop。改为 defer（延迟到订阅时执行）
         //   + subscribeOn（整段前置逻辑挪到弹性线程）；token 仍由 LLM 网络回调驱动，不长期占线程
         return Flux.defer(() -> {
+            if (userMessage == null || userMessage.isBlank()) throw new IllegalArgumentException("问题不能为空");
+            if (mode != null && !List.of("qa", "review").contains(mode)) throw new IllegalArgumentException("附件处理模式无效");
             // 配额上下文（登录=u:{userId}+role；游客=ip:{ip} 共享池）
             QuotaService.QuotaCtx quotaCtx = quotaContext(userId, exchange);
             // 会话归属：登录按 userId，匿名按 X-Guest-Key 凭据；他人会话直接 403（不再有"无主会话"）
             SessionOwnershipService.Owner owner = ownershipService.resolve(exchange.getRequest().getHeaders(), userId);
             ownershipService.claim(sessionId, owner);
-            return chatService.chat(sessionId, userMessage, quotaCtx, fileIds, owner.key());
+            return chatService.chat(sessionId, userMessage, quotaCtx, fileIds, owner, "review".equals(mode));
         }).subscribeOn(Schedulers.boundedElastic());
     }
 

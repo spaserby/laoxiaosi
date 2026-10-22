@@ -56,6 +56,9 @@ services:
       PG_PORT: "5432"
       REDIS_HOST: redis
       REDIS_PORT: "6379"
+      ATTACHMENT_STORAGE_DIR: /app/private-attachments
+    volumes:
+      - attachment_data:/app/private-attachments
     depends_on:
       postgres:
         condition: service_healthy
@@ -81,3 +84,4 @@ services:
 volumes:
   pg_data:
   redis_data:
+  attachment_data:

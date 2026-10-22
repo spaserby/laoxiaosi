@@ -34,8 +34,8 @@ server {
     root /usr/share/nginx/html;
     index index.html;
 
-    # 附件上传单文件 100MB（对标 DeepSeek）+ multipart 边界余量
-    client_max_body_size 110m;
+    # 最多 3 个 20MB 附件 + multipart 边界余量；单文件由 WebFlux 和模块再次限制。
+    client_max_body_size 65m;
 
     # ============ API 反代白名单（部署契约：新增后端前缀必须同步本正则） ============
     # 当前前缀：chat session law-article tools auth admin stats

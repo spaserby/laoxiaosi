@@ -21,7 +21,8 @@ public interface SessionMapper {
 
     @Insert("insert into chat_session(session_id, title, created_at, updated_at, owner_key)"
             + " values(#{sessionId}, #{title}, #{createdAt}, #{updatedAt}, #{ownerKey})"
-            + " on conflict (session_id) do update set updated_at = excluded.updated_at")
+            + " on conflict (session_id) do update set updated_at = excluded.updated_at"
+            + " where chat_session.owner_key = excluded.owner_key")
     int upsert(@Param("sessionId") String sessionId, @Param("title") String title,
                @Param("createdAt") long createdAt, @Param("updatedAt") long updatedAt,
                @Param("ownerKey") String ownerKey);
@@ -40,8 +41,8 @@ public interface SessionMapper {
     String findOwnerKey(@Param("sessionId") String sessionId);
 
     /** 匿名转登录时升级归属（仅同一浏览器凭据匹配时由 SessionOwnershipService 调用） */
-    @Update("update chat_session set owner_key = #{ownerKey} where session_id = #{sessionId}")
-    int setOwnerKey(@Param("sessionId") String sessionId, @Param("ownerKey") String ownerKey);
+    @Update("update chat_session set owner_key = #{ownerKey} where session_id = #{sessionId} and owner_key = #{previousOwnerKey}")
+    int upgradeOwner(@Param("sessionId") String sessionId, @Param("ownerKey") String ownerKey, @Param("previousOwnerKey") String previousOwnerKey);
 
     /** 删除：条件里带归属，越权删除在 SQL 层就不可能生效 */
     @Delete("delete from chat_session where session_id = #{sessionId} and owner_key = #{ownerKey}")

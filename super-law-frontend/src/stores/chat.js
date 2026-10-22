@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { listSessions, getSessionMessages, deleteSession, stopChat } from '../api/session'
+import { listSessions, getSessionMessages, deleteSession, stopChat, listAttachments } from '../api/session'
 import { SseClient } from '../utils/sse'
 import { sessionHeaders } from '../utils/guest'
 import { useUserStore } from './user'
@@ -20,6 +20,8 @@ export const useChatStore = defineStore('chat', {
     sessions: [],            // [{sessionId, title, createdAt, updatedAt}]
     currentSessionId: null,  // null = 欢迎态（首次发送时生成 id）
     messages: {},            // sessionId -> [{role, content, streaming?}]
+    attachmentsBySession: {},
+    attachmentErrors: {},
     phase: 'idle',           // idle | streaming
     blankMode: false,        // 新建咨询后的干净页态（居中问候+居中输入框，非报纸首页）
     quotaDeny: null,         // 配额拒绝事件（{code,message,tier,remaining,resetAt}），ChatView 弹引导
@@ -28,6 +30,7 @@ export const useChatStore = defineStore('chat', {
 
   getters: {
     currentMessages: (s) => s.messages[s.currentSessionId] || [],
+    currentAttachments: (s) => s.attachmentsBySession[s.currentSessionId] || [],
     currentTitle: (s) => {
       const cur = s.sessions.find(x => x.sessionId === s.currentSessionId)
       return cur ? cur.title : '新对话'
@@ -36,6 +39,19 @@ export const useChatStore = defineStore('chat', {
   },
 
   actions: {
+    ensureSession() {
+      if (!this.currentSessionId) this.currentSessionId = this.createSessionId('附件咨询')
+      return this.currentSessionId
+    },
+    async refreshAttachments(sessionId = this.currentSessionId) {
+      if (!sessionId) return
+      try {
+        const files = await listAttachments(sessionId)
+        const previous = this.attachmentsBySession[sessionId] || []
+        this.attachmentsBySession[sessionId] = files.map(file => ({ ...file, url: previous.find(p => p.fileId === file.fileId)?.url || '' }))
+        this.attachmentErrors[sessionId] = false
+      } catch (error) { this.attachmentErrors[sessionId] = true; throw error }
+    },
     /** 拉取会话列表（侧栏） */
     async loadSessions() {
       try {
@@ -67,18 +83,21 @@ export const useChatStore = defineStore('chat', {
           this.messages[sessionId] = []
         }
       }
+      await this.refreshAttachments(sessionId).catch(() => {})
     },
 
     /** 删除会话 */
     async removeSession(sessionId) {
       await deleteSession(sessionId)
       delete this.messages[sessionId]
+      delete this.attachmentsBySession[sessionId]
+      delete this.attachmentErrors[sessionId]
       if (this.currentSessionId === sessionId) this.currentSessionId = null
       await this.loadSessions()
     },
 
     /** 发送消息：建会话（首轮）→ 推本地消息 → 开 SSE 流 */
-    send(text, files) {
+    send(text, files, mode = 'qa') {
       if (!text || !text.trim() || this.isStreaming) return
       this.blankMode = false
       const sid = this.currentSessionId || this.createSessionId(text)
@@ -107,7 +126,7 @@ export const useChatStore = defineStore('chat', {
       // 原先 token 与 userMessage 都拼在 URL 上，而 URL 会进 nginx/代理访问日志（P0 安全整改）。
       const es = new SseClient('/chat/stream', {
         headers: sessionHeaders(),
-        body: { sessionId: sid, userMessage: text, fileIds: (files || []).map((f) => f.fileId) }
+        body: { sessionId: sid, userMessage: text, fileIds: (files || []).map((f) => f.fileId), mode }
       })
       this.es = es
 
@@ -161,6 +180,12 @@ export const useChatStore = defineStore('chat', {
       })
       // 思考过程阶段事件：首 token 前的黑盒等待变为可见进度（路由/改写/检索/生成）
       es.addEventListener('stage', (e) => { assistant.stage = e.data })
+      es.addEventListener('attachment', (e) => {
+        try {
+          const { sources, warnings, selectedSections, totalSections, fullCoverage } = JSON.parse(e.data)
+          assistant.attachmentContext = { sources, warnings, selectedSections, totalSections, fullCoverage }
+        } catch { /* 无效事件不影响正文 */ }
+      })
       // 结构化引用事件——引用卡展示"检索命中了什么"（可信），正则解析降级为兜底
       es.addEventListener('citation', (e) => {
         try {

@@ -31,7 +31,10 @@ public class RerankService {
 
     public RerankService(RagProperties properties) {
         this.properties = properties;
-        this.restClient = RestClient.create();
+        var factory = new org.springframework.http.client.JdkClientHttpRequestFactory(java.net.http.HttpClient.newBuilder()
+                .connectTimeout(java.time.Duration.ofSeconds(5)).build());
+        factory.setReadTimeout(java.time.Duration.ofSeconds(10));
+        this.restClient = RestClient.builder().requestFactory(factory).build();
     }
 
     /** 精排结果：候选下标 + Cross-Encoder 相关性分数 */

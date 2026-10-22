@@ -8,10 +8,24 @@ import { marked } from 'marked'
 import { Scale, ShieldCheck } from 'lucide-vue-next'
 import CitationCard from './CitationCard.vue'
 import ThinkingPanel from './ThinkingPanel.vue'
+import { getAttachmentSource } from '../api/session'
+import { useChatStore } from '../stores/chat'
+import { ElMessage, ElMessageBox } from 'element-plus'
 
 const props = defineProps({
   message: { type: Object, required: true }
 })
+const chat = useChatStore()
+async function showSource(source) {
+  try {
+    const text = await getAttachmentSource(chat.currentSessionId, source.fileId, source.parentId)
+    await ElMessageBox.alert(text, `${source.label} · ${source.name} · ${source.location}`, {
+      confirmButtonText: '关闭', customClass: 'attachment-source-dialog', dangerouslyUseHTMLString: false
+    })
+  } catch (error) {
+    if (error !== 'cancel' && error !== 'close') ElMessage.error(error.response?.data?.message || '原文不可用或已过期，请重新上传')
+  }
+}
 
 marked.setOptions({ breaks: true })
 
@@ -74,6 +88,15 @@ const topScore = computed(() => {
     <div v-else class="ai-body">
       <div class="md" v-html="html"></div>
       <span v-if="message.streaming" class="cursor"></span>
+      <div v-if="message.attachmentContext" class="attachment-evidence">
+        <p>附件覆盖：{{ message.attachmentContext.selectedSections }}/{{ message.attachmentContext.totalSections }} 个章节
+          · {{ message.attachmentContext.fullCoverage ? '覆盖全部已解析正文' : '未覆盖全文' }}</p>
+        <p v-for="warning in message.attachmentContext.warnings" :key="warning">{{ warning }}</p>
+        <button v-for="source in message.attachmentContext.sources" :key="source.fileId + ':' + source.parentId"
+                type="button" @click="showSource(source)">
+          {{ source.label }} · {{ source.name }} · {{ source.location }} ↗
+        </button>
+      </div>
       <!-- 法条引用：藏青侧线卡（脚注式） -->
       <CitationCard v-for="(c, ci) in citations" :key="c.lawName + c.articleNo + '#' + ci" :citation="c" />
       <!-- 答复脚注（有引用时展示，lucide 线条图标前缀） -->
@@ -142,4 +165,10 @@ const topScore = computed(() => {
   display: flex; align-items: center; gap: 8px; line-height: 1.8;
 }
 .a-note :deep(svg) { color: var(--acc); flex-shrink: 0; }
+.attachment-evidence { margin-top: 16px; border-top: 1px solid var(--line); padding-top: 10px; font-size: 12px; color: var(--soft); text-align: left; }
+.attachment-evidence button { display: block; color: var(--acc); text-align: left; margin: 6px 0; text-decoration: underline; }
+</style>
+<style>
+.attachment-source-dialog { width: min(760px, 92vw); }
+.attachment-source-dialog .el-message-box__message { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 60vh; overflow: auto; }
 </style>

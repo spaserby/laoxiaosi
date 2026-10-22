@@ -41,6 +41,7 @@ public class SessionController {
     private final SessionIndexService sessionIndexService;
     private final ChatMemory chatMemory;
     private final SessionOwnershipService ownershipService;
+    private final com.law.backend.service.ChatFileService chatFileService;
 
     /** 会话列表：只返回当前调用方的会话（登录用户按 userId；匿名按 X-Guest-Key 凭据） */
     @GetMapping("/list")
@@ -62,7 +63,9 @@ public class SessionController {
                                               @AuthenticationPrincipal Long userId, ServerWebExchange exchange) {
         // 归属校验 + chatMemory.get（PG 读摘要与窗口原文，两次 SQL）都是阻塞调用
         return Blocking.<Map<String, Object>>call(() -> {
-            ownershipService.require(sessionId, ownershipService.resolve(exchange.getRequest().getHeaders(), userId));
+            var owner = ownershipService.resolve(exchange.getRequest().getHeaders(), userId);
+            ownershipService.claim(sessionId, owner);
+            ownershipService.require(sessionId, owner);
             List<Map<String, String>> data = chatMemory.get(sessionId).stream()
                     .map(this::toDto)
                     .toList();
@@ -77,7 +80,9 @@ public class SessionController {
         // clear（删消息 + 摘要）与 remove（删索引）共 3 次 SQL，隔离到弹性线程
         return Blocking.<Map<String, Object>>call(() -> {
             SessionOwnershipService.Owner owner = ownershipService.resolve(exchange.getRequest().getHeaders(), userId);
+            ownershipService.claim(sessionId, owner);
             ownershipService.require(sessionId, owner);
+            chatFileService.deleteSession(sessionId, owner);
             chatMemory.clear(sessionId);
             sessionIndexService.remove(sessionId, owner.key());
             return Map.of("code", 200, "message", "ok");

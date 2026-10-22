@@ -48,14 +48,14 @@ if [ "$DO_DB" = "1" ]; then
   # 口令经 --env-file 注入（psql 认 PGPASSWORD，故把 PG_PASSWORD 映射一份），不进命令行
   TMPENV=$(mktemp)
   trap 'rm -f "$TMPENV"' EXIT
-  grep -E '^PG_PASSWORD=' deploy/.env | head -1 | sed 's/^PG_PASSWORD=/PGPASSWORD=/' | tr -d '\r' > "$TMPENV"
+  awk -F= '$1 == "PG_PASSWORD" { sub(/^[^=]*=/, ""); sub(/\r$/, ""); print "PGPASSWORD" "=" $0; exit }' deploy/.env > "$TMPENV"
   run_sql() {
     # client_min_messages=warning：幂等脚本会打一堆 "already exists, skipping" NOTICE，压掉噪音
     docker run --rm -i -e PGOPTIONS='-c client_min_messages=warning' \
       --env-file deploy/.env --env-file "$TMPENV" postgres:17-alpine \
       sh -c 'psql -h "$PG_HOST" -p "${PG_PORT:-5432}" -U "$PG_USER" -d "$PG_DB" -v ON_ERROR_STOP=1 -q -f -'
   }
-  for f in scripts/migration-01-doc-type-and-dedupe.sql scripts/migration-02-session-owner.sql db/init.sql; do
+  for f in scripts/migration-01-doc-type-and-dedupe.sql scripts/migration-02-session-owner.sql scripts/migration-03-private-attachments.sql db/init.sql; do
     printf '  %-48s' "$f"
     run_sql < "$f" > /dev/null
     echo "OK"
