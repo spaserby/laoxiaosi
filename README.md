@@ -11,7 +11,7 @@
 | 能力 | 关键实现 |
 |---|---|
 | SSE 流式聊天 + 停止生成 | `Flux<ServerSentEvent>` + `Sinks.Empty` + `takeUntilOther`（Reactor cancel 传播） |
-| 会话记忆持久化 | 实现 Spring AI `ChatMemory` 接口；后演进为"原文窗口 + 早期摘要"两级上下文压缩 |
+| 会话记忆持久化 | PostgreSQL 保存完整聊天原文，授权分页回放；模型使用最近轮次与可重试的增量摘要，见[记忆说明](docs/chat-memory.md) |
 | 思考过程可见化 | reasoning_content 透传，前端 ThinkingPanel 折叠展示 |
 | 流式与滚动体验 | 长回答滚动锚定、停止生成后的前端状态治理 |
 
@@ -96,7 +96,7 @@ legal-assistant/
 │   ├── tool/                Function Calling 工具（法律计算器/联网搜索/检索，路线差异化预算）
 │   ├── safety/              确定性安全层（纯规则引擎，零 LLM）
 │   ├── auth/                JWT 无状态认证 + RBAC + 短信验证码
-│   ├── memory/              会话记忆（原文窗口 + 早期摘要）
+│   ├── memory/              原文归档 / 授权分页 / 模型窗口 / 增量摘要
 │   └── src/test/            评估门禁（安全/路由离线金标，mvn test 一票否决）
 ├── super-law-frontend/    前端（端口 5173，dev 代理到 8082）
 ├── db/

@@ -13,9 +13,11 @@ http.interceptors.request.use((config) => {
 // 会话列表（updatedAt 倒序）
 export const listSessions = () => http.get('/session/list').then(r => r.data.data)
 
-// 会话历史消息 [{role, content}]
-export const getSessionMessages = (sessionId) =>
-  http.get(`/session/${encodeURIComponent(sessionId)}/messages`).then(r => r.data.data)
+// 独立原文分页；ID 使用字符串，避免 BIGINT 超出 JavaScript 精度。
+export const getSessionMessages = (sessionId, beforeMessageId) =>
+  http.get(`/session/${encodeURIComponent(sessionId)}/messages`, {
+    params: { limit: 50, ...(beforeMessageId ? { beforeMessageId } : {}) }
+  }).then(r => r.data)
 
 // 删除会话（记忆 + 索引）
 export const deleteSession = (sessionId) =>

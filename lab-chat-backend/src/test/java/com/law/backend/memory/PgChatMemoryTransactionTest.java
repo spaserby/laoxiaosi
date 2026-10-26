@@ -1,198 +1,176 @@
 package com.law.backend.memory;
 
-import com.law.backend.model.ModelRegistry;
-import com.law.backend.model.ModelRouteProperties;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.DisplayName;
-import org.junit.jupiter.api.Test;
-import org.mybatis.spring.SqlSessionFactoryBean;
-import org.mybatis.spring.SqlSessionTemplate;
-import org.springframework.ai.chat.client.ChatClient;
-import org.springframework.ai.chat.memory.ChatMemory;
-import org.springframework.ai.chat.messages.AssistantMessage;
-import org.springframework.ai.chat.messages.UserMessage;
+import com.law.backend.attachment.AttachmentTokens;
+import com.law.backend.service.FileProperties;
+import com.law.backend.service.SessionAccessDeniedException;
+import com.law.backend.service.SessionOwnershipService;
+import org.junit.jupiter.api.*;
+import org.springframework.ai.chat.messages.*;
 import org.springframework.context.annotation.AnnotationConfigApplicationContext;
-import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Configuration;
-import org.springframework.context.annotation.Import;
 import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.jdbc.datasource.embedded.EmbeddedDatabase;
-import org.springframework.jdbc.datasource.embedded.EmbeddedDatabaseBuilder;
-import org.springframework.jdbc.datasource.embedded.EmbeddedDatabaseType;
-import org.springframework.jdbc.support.JdbcTransactionManager;
 import org.springframework.transaction.PlatformTransactionManager;
-import org.springframework.transaction.annotation.EnableTransactionManagement;
 import org.springframework.transaction.support.TransactionTemplate;
-
 import javax.sql.DataSource;
-import java.util.List;
-import java.util.Map;
-import java.util.concurrent.atomic.AtomicReference;
+import java.time.LocalDateTime;
+import java.util.*;
+import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.Mockito.*;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.Mockito.RETURNS_DEEP_STUBS;
-import static org.mockito.Mockito.after;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.timeout;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.verifyNoInteractions;
-import static org.mockito.Mockito.when;
-
-/** 使用真实 Mapper、数据库及 Spring 代理验证事务；只替换摘要外部依赖。 */
+/** 真实 Spring 事务 + MyBatis SQL；仅替换外部摘要模型。 */
 class PgChatMemoryTransactionTest {
+    static final String SESSION = "synthetic-memory";
+    static final SessionOwnershipService.Owner OWNER = new SessionOwnershipService.Owner("u:900001", null);
+    AnnotationConfigApplicationContext context;
+    JdbcTemplate jdbc;
+    org.springframework.ai.chat.memory.ChatMemory memory;
+    MessageMapper messages;
+    SummaryMapper summaries;
+    ConversationTurnService turns;
+    ConversationHistoryService history;
+    ChatMemoryProperties properties;
+    TransactionTemplate transaction;
+    RollingSummaryModel model;
+    ConversationSummaryWorker worker;
 
-    private static final String SESSION = "transaction-test";
-
-    private AnnotationConfigApplicationContext context;
-    private ChatMemory memory;
-    private JdbcTemplate jdbc;
-    private SummaryMapper summaries;
-    private ModelRegistry models;
-    private TransactionTemplate transaction;
-
-    @BeforeEach
-    void setUp() {
-        context = new AnnotationConfigApplicationContext(TestConfig.class);
-        memory = context.getBean(ChatMemory.class);
+    @BeforeEach void setUp() {
+        context = new AnnotationConfigApplicationContext(MemoryTestDatabase.class);
         jdbc = new JdbcTemplate(context.getBean(DataSource.class));
-        summaries = context.getBean(SummaryMapper.class);
-        models = context.getBean(ModelRegistry.class);
+        jdbc.execute(MemoryTestDatabase.SCHEMA);
+        jdbc.update("insert into chat_session(session_id,owner_key) values(?,?)", SESSION, OWNER.key());
+        memory = context.getBean(org.springframework.ai.chat.memory.ChatMemory.class); messages = context.getBean(MessageMapper.class);
+        summaries = context.getBean(SummaryMapper.class); turns = context.getBean(ConversationTurnService.class);
+        history = context.getBean(ConversationHistoryService.class); properties = context.getBean(ChatMemoryProperties.class);
         transaction = new TransactionTemplate(context.getBean(PlatformTransactionManager.class));
-        context.getBean(ChatMemoryProperties.class).setVerbatimRounds(1);
-
-        // CHECK 用于在批量追加途中注入数据库错误。
-        jdbc.execute("create table chat_message (id bigserial primary key, "
-                + "session_id varchar(64) not null, role varchar(20) not null, "
-                + "content text check (content <> 'reject'))");
-        // 外键用于让裁剪 SQL 在数据库中失败，而非只模拟 Mapper 抛异常。
-        jdbc.execute("create table retained_message (message_id bigint references chat_message(id))");
-        jdbc.update("insert into chat_message(session_id, role, content) values (?, 'USER', 'old user')", SESSION);
-        jdbc.update("insert into chat_message(session_id, role, content) values (?, 'ASSISTANT', 'old assistant')", SESSION);
+        model = mock(RollingSummaryModel.class);
+        worker = new ConversationSummaryWorker(messages, summaries, properties, model, new AttachmentTokens(new FileProperties()));
+        when(model.summarize(anyString(), anyString())).thenReturn("用户陈述：合成付款争议。待核实日期、金额与合同。来源消息ID见证据区。");
     }
+    @AfterEach void close() { if (worker != null) worker.close(); if (context != null) context.close(); }
 
-    @AfterEach
-    void tearDown() {
-        context.close();
+    void rounds(int n) {
+        for (int i = 1; i <= n; i++) {
+            var turn = turns.begin(SESSION, OWNER.key(), "合成问题" + i);
+            turns.finish(turn, "合成答复" + i, "COMPLETE");
+        }
     }
-
-    @Test
-    @DisplayName("裁剪失败：整批新增回滚，旧窗口保留，不启动摘要")
-    void deleteFailureRollsBackAllInserts() {
-        jdbc.update("insert into retained_message select min(id) from chat_message");
-
-        assertThrows(DataAccessException.class, () -> memory.add(SESSION, List.of(
-                new UserMessage("new user"), new AssistantMessage("new assistant"))));
-
-        assertEquals(List.of("old user", "old assistant"), contents());
-        verifyNoInteractions(summaries, models);
+    @Test void fiftyRoundsSurviveAndHistoryNeverContainsInternalSummary() {
+        rounds(50);
+        assertEquals(100, messages.countBySession(SESSION));
+        List<String> contents = new ArrayList<>();
+        Long before = null;
+        do {
+            var page = history.page(SESSION, OWNER, before, 17);
+            assertTrue(page.data().stream().allMatch(m -> Set.of("user","assistant").contains(m.get("role"))));
+            contents.addAll(0, page.data().stream().map(m -> (String)m.get("content")).toList());
+            before = page.hasMore() ? Long.valueOf(page.nextCursor()) : null;
+        } while (before != null);
+        assertEquals(100, contents.size()); assertEquals("合成问题1", contents.get(0));
+        assertEquals("合成答复50", contents.get(99));
+        for (int i = 0; i < 6; i++) worker.scan();
+        assertEquals(92, summaries.state(SESSION).coveredUntilMessageId());
+        assertEquals(100, messages.countBySession(SESSION));
+        var view = memory.get(SESSION);
+        assertEquals(8, view.stream().filter(m -> m.getMessageType()!=MessageType.SYSTEM).count());
+        assertTrue(view.get(0) instanceof SystemMessage);
+        assertEquals("合成问题47", view.get(1).getText());
     }
-
-    @Test
-    @DisplayName("批量插入途中失败：已插入的前半批也回滚")
-    void laterInsertFailureRollsBackEarlierInsert() {
-        assertThrows(DataAccessException.class, () -> memory.add(SESSION, List.of(
-                new UserMessage("new user"), new AssistantMessage("reject"))));
-
-        assertEquals(List.of("old user", "old assistant"), contents());
-        verifyNoInteractions(summaries, models);
+    @Test void failedBatchAndOuterRollbackKeepAllOriginals() {
+        rounds(10);
+        assertThrows(DataAccessException.class, () -> memory.add(SESSION,
+                List.of(new UserMessage("new"), new AssistantMessage("reject"))));
+        transaction.executeWithoutResult(tx -> { memory.add(SESSION, List.of(new UserMessage("rolled back"))); tx.setRollbackOnly(); });
+        assertEquals(20, messages.countBySession(SESSION));
+        assertEquals(0, summaries.state(SESSION).coveredUntilMessageId());
+        verifyNoInteractions(model);
     }
-
-    @Test
-    @DisplayName("摘要等待外层事务提交，且只包含被裁掉的旧消息")
-    void summaryStartsOnlyAfterCommit() {
-        ChatClient client = mock(ChatClient.class, RETURNS_DEEP_STUBS);
-        when(models.getRawClient("test", "summary")).thenReturn(client);
-        when(client.prompt().system(anyString()).user(anyString()).call().content()).thenReturn("summary");
-        AtomicReference<List<String>> visibleAtSummary = new AtomicReference<>();
-        when(summaries.select(SESSION)).thenAnswer(invocation -> {
-            visibleAtSummary.set(contents());
-            return null;
+    @Test void publicHistoryControllerReturnsOriginalsWithoutSummaryAfterFiveRounds() {
+        rounds(5); worker.scan();
+        var controller = new com.law.backend.controller.SessionController(
+                mock(com.law.backend.service.SessionIndexService.class), history,
+                context.getBean(SessionOwnershipService.class), mock(com.law.backend.service.ChatFileService.class));
+        var exchange = org.springframework.mock.web.server.MockServerWebExchange.from(
+                org.springframework.mock.http.server.reactive.MockServerHttpRequest.get("/session/" + SESSION + "/messages").build());
+        var response = controller.messages(SESSION,900001L,exchange,null,50).block(java.time.Duration.ofSeconds(5));
+        var data = (List<?>) response.get("data");
+        assertEquals(10,data.size());
+        assertFalse(data.toString().contains("summary"));
+        assertTrue(data.toString().contains("合成问题1"));
+        assertEquals(false,response.get("hasMore"));
+    }
+    @Test void ownershipIsEnforcedByServiceAndSqlAndCursorOnlyMovesBackward() {
+        rounds(10);
+        var other = new SessionOwnershipService.Owner("u:900002", null);
+        assertThrows(SessionAccessDeniedException.class, () -> history.page(SESSION, other, null, 50));
+        assertTrue(messages.history(SESSION, other.key(), Long.MAX_VALUE, 100).isEmpty());
+        var page = history.page(SESSION, OWNER, 10L, 4);
+        assertEquals(List.of("6","7","8","9"), page.data().stream().map(m -> m.get("id")).toList());
+        assertEquals("6", page.nextCursor()); assertTrue(page.hasMore());
+        assertThrows(IllegalArgumentException.class, () -> history.page(SESSION, OWNER, 0L, 50));
+    }
+    @Test void summaryFailureDoesNotAdvanceAndFreshWorkerRetriesFromDatabase() {
+        rounds(10);
+        when(model.summarize(anyString(),anyString())).thenThrow(new IllegalStateException("synthetic failure"));
+        worker.scan();
+        assertEquals(0, summaries.state(SESSION).coveredUntilMessageId());
+        assertEquals(20, messages.countBySession(SESSION));
+        assertEquals(1, jdbc.queryForObject("select failures from chat_summary", Integer.class));
+        jdbc.update("update chat_summary set next_attempt_at=?", LocalDateTime.now().minusSeconds(1));
+        doReturn("待核实的合成付款争议，来源消息ID1至12。").when(model).summarize(anyString(),anyString());
+        worker.close();
+        worker = new ConversationSummaryWorker(messages, summaries, properties, model, new AttachmentTokens(new FileProperties()));
+        worker.scan();
+        assertEquals(12, summaries.state(SESSION).coveredUntilMessageId());
+        assertEquals(0, jdbc.queryForObject("select failures from chat_summary", Integer.class));
+    }
+    @Test void staleAndDeletedSummaryTasksCannotOverwriteOrResurrect() {
+        rounds(6);
+        var now = LocalDateTime.now();
+        assertEquals(1, summaries.claim(SESSION,"old",now,now.plusMinutes(10)));
+        jdbc.update("update chat_summary set lease_until=?", now.minusSeconds(1));
+        assertEquals(1, summaries.claim(SESSION,"new",now,now.plusMinutes(10)));
+        assertEquals(0, summaries.commit(SESSION,"old",0,0,2,"stale",now));
+        assertEquals(1, summaries.commit(SESSION,"new",0,0,2,"current",now));
+        assertEquals(0, summaries.commit(SESSION,"new",0,0,4,"stale version",now));
+        assertEquals("current", summaries.state(SESSION).content());
+        jdbc.update("update chat_summary set next_attempt_at=?", now.minusSeconds(1));
+        when(model.summarize(anyString(),anyString())).thenAnswer(call -> { history.delete(SESSION, OWNER); return "late result"; });
+        worker.process(SESSION);
+        assertNull(summaries.state(SESSION)); assertEquals(0, messages.countBySession(SESSION));
+    }
+    @Test void partialTurnsFinalizeOnceAndDeletedTurnCannotReturn() {
+        var turn = turns.begin(SESSION, OWNER.key(), "合成中断问题");
+        assertThrows(IllegalArgumentException.class, () -> turns.begin(SESSION, OWNER.key(), "并行请求"));
+        assertTrue(memory.get(SESSION).isEmpty());
+        turns.finish(turn,"部分答复","INTERRUPTED");
+        turns.finish(turn,"重复完成","COMPLETE");
+        assertEquals(2, messages.countBySession(SESSION));
+        assertTrue(memory.get(SESSION).get(1).getText().contains("INTERRUPTED"));
+        var running = turns.begin(SESSION, OWNER.key(), "合成待完成问题");
+        history.delete(SESSION,OWNER);
+        turns.finish(running,"迟到答复","COMPLETE");
+        assertEquals(0,messages.countBySession(SESSION));
+    }
+    @Test void oversizedTurnIsSummarizedInBoundedInputsBeforeSingleCursorCommit() {
+        properties.setSummaryInputTokens(2600); properties.setSummaryMaxTokens(300);
+        var turn = turns.begin(SESSION,OWNER.key(),"合成内容。".repeat(1500));
+        turns.finish(turn,"合成结束答复","COMPLETE"); rounds(4);
+        when(model.summarize(anyString(),anyString())).thenAnswer(call -> {
+            assertEquals(0,summaries.state(SESSION).coveredUntilMessageId());
+            assertFalse(org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive());
+            return "用户陈述待核实。来源消息ID1和2。";
         });
-
-        transaction.executeWithoutResult(status -> {
-            memory.add(SESSION, List.of(new UserMessage("new user"), new AssistantMessage("new assistant")));
-            assertEquals(List.of("new user", "new assistant"), contents());
-            verify(summaries, after(200).never()).select(SESSION);
-            verifyNoInteractions(summaries, models);
-        });
-
-        verify(summaries, timeout(3000)).upsert(SESSION, "summary");
-        assertEquals(List.of("new user", "new assistant"), visibleAtSummary.get());
-        verify(client.prompt().system(anyString())).user("USER:old user\nASSISTANT:old assistant\n");
+        worker.scan();
+        assertEquals(2,summaries.state(SESSION).coveredUntilMessageId());
+        assertEquals(10,messages.countBySession(SESSION));
+        verify(model,atLeast(2)).summarize(anyString(),anyString());
     }
-
-    @Test
-    @DisplayName("外层事务回滚：撤销新增与裁剪，不启动摘要")
-    void outerRollbackDoesNotStartSummary() {
-        transaction.executeWithoutResult(status -> {
-            memory.add(SESSION, List.of(new UserMessage("new user"), new AssistantMessage("new assistant")));
-            status.setRollbackOnly();
-        });
-
-        assertEquals(List.of("old user", "old assistant"), contents());
-        verify(summaries, after(200).never()).select(SESSION);
-        verifyNoInteractions(summaries, models);
-    }
-
-    @Test
-    @DisplayName("关闭摘要仍正常提交新增与裁剪")
-    void summaryDisabledStillTrimsWindow() {
-        context.getBean(ChatMemoryProperties.class).setSummaryEnabled(false);
-
-        memory.add(SESSION, List.of(new UserMessage("new user"), new AssistantMessage("new assistant")));
-
-        assertEquals(List.of("new user", "new assistant"), contents());
-        verifyNoInteractions(summaries, models);
-    }
-
-    private List<String> contents() {
-        return jdbc.queryForList("select content from chat_message where session_id = ? order by id",
-                String.class, SESSION);
-    }
-
-    @Configuration(proxyBeanMethods = false)
-    @EnableTransactionManagement
-    @Import(PgChatMemory.class)
-    static class TestConfig {
-
-        @Bean(destroyMethod = "shutdown")
-        EmbeddedDatabase dataSource() {
-            return new EmbeddedDatabaseBuilder().generateUniqueName(true).setType(EmbeddedDatabaseType.H2).build();
-        }
-
-        @Bean
-        PlatformTransactionManager transactionManager(DataSource dataSource) {
-            return new JdbcTransactionManager(dataSource);
-        }
-
-        @Bean
-        MessageMapper messageMapper(DataSource dataSource) throws Exception {
-            SqlSessionFactoryBean factory = new SqlSessionFactoryBean();
-            factory.setDataSource(dataSource);
-            var sqlSessionFactory = factory.getObject();
-            sqlSessionFactory.getConfiguration().addMapper(MessageMapper.class);
-            return new SqlSessionTemplate(sqlSessionFactory).getMapper(MessageMapper.class);
-        }
-
-        @Bean
-        SummaryMapper summaryMapper() {
-            return mock(SummaryMapper.class);
-        }
-
-        @Bean
-        ModelRegistry modelRegistry() {
-            return mock(ModelRegistry.class);
-        }
-
-        @Bean
-        ModelRouteProperties routeProperties() {
-            ModelRouteProperties properties = new ModelRouteProperties();
-            properties.setRoutes(Map.of("cheap", "test/summary"));
-            return properties;
-        }
+    @Test void abandonedRunningTurnIsRecoveredWithoutInventingAnswer() {
+        turns.begin(SESSION,OWNER.key(),"合成重启前问题");
+        jdbc.update("update chat_message set created_at=?", LocalDateTime.now().minusHours(2));
+        properties.setSummaryEnabled(false); worker.scan();
+        assertEquals("INTERRUPTED", jdbc.queryForObject("select status from chat_message",String.class));
+        assertEquals(1,messages.countBySession(SESSION));
+        assertDoesNotThrow(() -> turns.begin(SESSION,OWNER.key(),"重启后问题"));
     }
 }

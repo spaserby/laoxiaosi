@@ -22,16 +22,25 @@ public class ChatContextBudget {
         int historyBudget = remaining - reserved;
         List<Message> kept = new ArrayList<>();
         List<Message> input = history == null ? List.of() : history;
+        // 摘要/覆盖提示单独计费，不与最旧一轮绑定后一起被预算裁掉。
+        List<Message> internal = input.stream().filter(m -> m.getMessageType() == org.springframework.ai.chat.messages.MessageType.SYSTEM).toList();
+        int internalSize = internal.stream().mapToInt(m -> tokens.chat(m.getText()) + 16).sum();
+        boolean keepInternal = internalSize <= historyBudget / 2;
+        if (keepInternal) historyBudget -= internalSize;
+        input = input.stream().filter(m -> m.getMessageType() == org.springframework.ai.chat.messages.MessageType.USER
+                || m.getMessageType() == org.springframework.ai.chat.messages.MessageType.ASSISTANT).toList();
         // 从最近的完整 user/assistant 轮次保留，避免把截断的旧回复当作依据。
         int cursor = input.size();
         while (cursor > 0) {
             int start = cursor - 1;
             while (start > 0 && input.get(start).getMessageType() != org.springframework.ai.chat.messages.MessageType.USER) start--;
             List<Message> turn = input.subList(start, cursor);
+            if (turn.get(0).getMessageType() != org.springframework.ai.chat.messages.MessageType.USER) break;
             int size = turn.stream().mapToInt(m -> tokens.chat(m.getText()) + 16).sum();
             if (size > historyBudget) break;
             kept.addAll(0, turn); historyBudget -= size; cursor = start;
         }
+        if (keepInternal) kept.addAll(0, internal);
         return new Allocation(List.copyOf(kept), reserved);
     }
     public void verify(String system, String user, List<Message> history, int images) {

@@ -199,9 +199,14 @@ legal:
       retry-budget-grant: 8
     chat-memory:
       window-size: 10                  # （已废弃，由 verbatim-rounds + 摘要取代）
-      verbatim-rounds: 4               # 原文保留轮数，超出部分裁剪并异步摘要
+      verbatim-rounds: 4               # 只限制模型最近原文轮数，聊天记录不裁剪
       summary-enabled: true            # 早期历史摘要开关（上下文压缩）
       summary-route: cheap             # 摘要用廉价路线
+      summary-input-tokens: 12000      # 保守估算的单次摘要输入预算
+      summary-max-tokens: 1500         # 摘要上限，保留事实/日期/金额/来源/待解决问题
+      summary-batch-turns: 8           # 单批只处理完整终态轮次
+      summary-poll-ms: 15000           # 数据库游标驱动，失败或重启后继续
+      abandoned-turn-minutes: 60       # 异常退出的 RUNNING 轮次恢复期限
       # 记忆落 PG chat_message/chat_summary 表（持久化，不再 24h 过期）；
       #   redis-key-prefix/ttl-hours 随 Redis 记忆实现一同下线
     # RAG 检索增强配置（检索侧改为 searchLaw 工具由模型按需调用，

@@ -12,6 +12,7 @@ import AssistantBubble from './AssistantBubble.vue'
 
 const store = useChatStore()
 let scroller = null
+let loadingOlder = false
 
 onMounted(() => {
   scroller = document.querySelector('.page-scroll')
@@ -24,10 +25,29 @@ watch(
   () => [store.currentSessionId, store.currentMessages.length],
   async () => {
     await nextTick()
+    if (loadingOlder) return
     if (store.isStreaming) scrollToLastQuestion()
     else scrollBottom()
   }
 )
+
+async function loadOlder() {
+  const sid = store.currentSessionId
+  const desktop = scroller && scroller.scrollHeight > scroller.clientHeight + 4
+  const element = desktop ? scroller : document.documentElement
+  const height = element.scrollHeight
+  const top = desktop ? element.scrollTop : window.scrollY
+  loadingOlder = true
+  try {
+    await store.loadOlderMessages()
+    await nextTick()
+    if (store.currentSessionId === sid) {
+      const next = top + element.scrollHeight - height
+      if (desktop) element.scrollTop = next
+      else window.scrollTo({ top: next })
+    }
+  } finally { loadingOlder = false }
+}
 
 function scrollToLastQuestion() {
   const list = scroller ? scroller.querySelectorAll('.msg-user') : []
@@ -51,9 +71,16 @@ function scrollBottom() {
 <template>
   <section class="chat visible" aria-live="polite">
     <div class="chat-label">— 法律咨询 —</div>
-    <template v-for="(m, i) in store.currentMessages" :key="i">
+    <p v-if="store.currentHistoryPage.loading && !store.currentMessages.length" class="history-controls">正在加载历史记录…</p>
+    <div class="history-controls">
+      <button v-if="store.currentHistoryPage.hasMore" :disabled="store.currentHistoryPage.loading || store.isStreaming" @click="loadOlder">
+        {{ store.currentHistoryPage.loading ? '加载中…' : '加载更早记录' }}
+      </button>
+      <button v-if="store.currentHistoryPage.error" @click="store.currentHistoryPage.loaded ? loadOlder() : store.loadHistory(store.currentSessionId)">{{ store.currentHistoryPage.error }}</button>
+    </div>
+    <template v-for="(m, i) in store.currentMessages" :key="m.id || m.localId || `local-${i}`">
       <AssistantBubble v-if="m.role === 'assistant'" :message="m" />
-      <div v-else class="msg-user">
+      <div v-else-if="m.role === 'user'" class="msg-user">
         <span class="mu-l">咨询请求</span>
         <!-- 附件卡行（文件名+字数，与输入侧 chips 同源） -->
         <div v-if="m.attachments && m.attachments.length" class="mu-files">
@@ -64,6 +91,7 @@ function scrollBottom() {
           </span>
         </div>
         {{ m.content }}
+        <span v-if="m.status && m.status !== 'COMPLETE'" class="mu-l">{{ m.status === 'RUNNING' ? '生成中' : '本轮未完成' }}</span>
       </div>
     </template>
   </section>
@@ -75,6 +103,8 @@ function scrollBottom() {
   font-family: var(--mono); font-size: 10px; letter-spacing: .32em;
   color: var(--faint); text-transform: uppercase; text-align: center;
 }
+.history-controls { text-align: center; margin-top: 14px; }
+.history-controls button { background: transparent; border: 1px solid var(--line-ink); padding: 5px 12px; color: var(--faint); cursor: pointer; }
 .msg-user {
   margin: 24px 0 0 auto; max-width: 74%; width: fit-content;
   background: var(--ink); color: #F2F3F5; padding: 14px 20px;

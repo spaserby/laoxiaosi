@@ -12,7 +12,7 @@ Object.defineProperty(globalThis, 'localStorage', {
   value: { getItem: key => values.get(key) || null, setItem: (key, value) => values.set(key, value) }
 })
 globalThis.fetch = async () => new Response('event: done\ndata: [DONE]\n\n', { headers: { 'content-type': 'text/event-stream' } })
-const vite = await createServer({ server: { middlewareMode: true }, appType: 'custom' })
+const vite = await createServer({ server: { middlewareMode: true, hmr: false }, appType: 'custom' })
 const { useChatStore } = await vite.ssrLoadModule('/src/stores/chat.js')
 after(async () => {
   await vite.close()

@@ -30,8 +30,6 @@ CREATE INDEX IF NOT EXISTS spring_ai_vector_index
 -- ★ 历史库升级补列：CREATE TABLE IF NOT EXISTS 对已存在的表是空操作，
 --   老库不会自动长出后加的列（doc_type / owner_key），必须显式 ALTER 兜底，
 --   否则升级后应用一写入就报 column does not exist。
-ALTER TABLE law_article  ADD COLUMN IF NOT EXISTS doc_type  VARCHAR(32);
-ALTER TABLE chat_session ADD COLUMN IF NOT EXISTS owner_key VARCHAR(80);
 
 -- 法条底账（唯一事实源，从 MySQL 迁来；列名与旧表一致保证迁移零映射）
 CREATE TABLE IF NOT EXISTS law_article (
@@ -50,6 +48,7 @@ CREATE TABLE IF NOT EXISTS law_article (
   deleted      SMALLINT DEFAULT 0
 );
 -- 稀疏路检索（取代 MySQL FULLTEXT ngram）：pg_trgm GIN 支持中文 ILIKE 加速
+ALTER TABLE law_article ADD COLUMN IF NOT EXISTS doc_type VARCHAR(32);
 CREATE INDEX IF NOT EXISTS idx_law_content_trgm ON law_article USING gin (content gin_trgm_ops);
 CREATE INDEX IF NOT EXISTS idx_law_name_trgm ON law_article USING gin (law_name gin_trgm_ops);
 CREATE INDEX IF NOT EXISTS idx_law_deleted ON law_article(deleted);
@@ -80,6 +79,7 @@ CREATE TABLE IF NOT EXISTS chat_session (
   owner_key  VARCHAR(80)
 );
 CREATE INDEX IF NOT EXISTS idx_session_updated ON chat_session(updated_at DESC);
+ALTER TABLE chat_session ADD COLUMN IF NOT EXISTS owner_key VARCHAR(80);
 CREATE INDEX IF NOT EXISTS idx_session_owner ON chat_session(owner_key, updated_at DESC);
 
 -- 会话消息（取代 Redis RList chat:memory:{sid}；id 自增即时序）
@@ -88,7 +88,9 @@ CREATE TABLE IF NOT EXISTS chat_message (
   session_id VARCHAR(64) NOT NULL,
   role       VARCHAR(20) NOT NULL,
   content    TEXT,
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  turn_id    VARCHAR(36),
+  status     VARCHAR(20) NOT NULL DEFAULT 'COMPLETE'
 );
 CREATE INDEX IF NOT EXISTS idx_msg_session ON chat_message(session_id, id);
 
@@ -96,10 +98,22 @@ CREATE INDEX IF NOT EXISTS idx_msg_session ON chat_message(session_id, id);
 CREATE TABLE IF NOT EXISTS chat_summary (
   session_id VARCHAR(64) PRIMARY KEY,
   content    TEXT NOT NULL,
-  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  covered_until_message_id BIGINT NOT NULL DEFAULT 0,
+  version BIGINT NOT NULL DEFAULT 0,
+  legacy BOOLEAN NOT NULL DEFAULT FALSE,
+  lease_token VARCHAR(36),
+  lease_until TIMESTAMP,
+  failures INTEGER NOT NULL DEFAULT 0,
+  next_attempt_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 -- 向量同步指纹底账（取代 Redis Hash rag:article:hash；value 格式 "md5;docId1,docId2"）
+CREATE UNIQUE INDEX IF NOT EXISTS idx_msg_turn_role ON chat_message(session_id,turn_id,role);
+CREATE INDEX IF NOT EXISTS idx_msg_user_cursor ON chat_message(session_id,id) WHERE role='USER';
+CREATE INDEX IF NOT EXISTS idx_msg_running ON chat_message(created_at) WHERE status='RUNNING';
+CREATE INDEX IF NOT EXISTS idx_summary_retry ON chat_summary(next_attempt_at);
+
 CREATE TABLE IF NOT EXISTS rag_ledger (
   article_id   VARCHAR(32) PRIMARY KEY,
   ledger_value TEXT NOT NULL

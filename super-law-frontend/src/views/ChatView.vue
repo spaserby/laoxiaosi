@@ -19,7 +19,8 @@ const store = useChatStore()
 const userStore = useUserStore()
 const router = useRouter()
 
-const inChat = computed(() => store.currentMessages.length > 0 || store.isStreaming)
+const inChat = computed(() => store.currentMessages.length > 0 || store.isStreaming
+  || !!(store.currentSessionId && (store.currentHistoryPage.loading || store.currentHistoryPage.loaded || store.currentHistoryPage.error)))
 /** 新建咨询干净页：blankMode 且尚无消息 */
 const showBlank = computed(() => store.blankMode && !inChat.value)
 

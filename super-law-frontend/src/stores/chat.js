@@ -20,6 +20,7 @@ export const useChatStore = defineStore('chat', {
     sessions: [],            // [{sessionId, title, createdAt, updatedAt}]
     currentSessionId: null,  // null = 欢迎态（首次发送时生成 id）
     messages: {},            // sessionId -> [{role, content, streaming?}]
+    historyPages: {},        // sessionId -> {loaded, loading, hasMore, nextCursor, stale, error}
     attachmentsBySession: {},
     attachmentErrors: {},
     phase: 'idle',           // idle | streaming
@@ -30,6 +31,7 @@ export const useChatStore = defineStore('chat', {
 
   getters: {
     currentMessages: (s) => s.messages[s.currentSessionId] || [],
+    currentHistoryPage: (s) => s.historyPages[s.currentSessionId] || {},
     currentAttachments: (s) => s.attachmentsBySession[s.currentSessionId] || [],
     currentTitle: (s) => {
       const cur = s.sessions.find(x => x.sessionId === s.currentSessionId)
@@ -74,22 +76,48 @@ export const useChatStore = defineStore('chat', {
       if (this.isStreaming) this.stop()
       this.currentSessionId = sessionId
       this.blankMode = false
-      if (!this.messages[sessionId]) {
-        try {
-          const list = await getSessionMessages(sessionId)
-          this.messages[sessionId] = list.map(m => ({ role: m.role, content: m.content }))
-        } catch (e) {
-          console.warn('历史消息加载失败', e)
-          this.messages[sessionId] = []
-        }
-      }
+      if (!this.historyPages[sessionId]?.loaded || this.historyPages[sessionId]?.stale)
+        await this.loadHistory(sessionId)
       await this.refreshAttachments(sessionId).catch(() => {})
+    },
+
+    async loadHistory(sessionId, older = false) {
+      const previous = this.historyPages[sessionId] || {}
+      if (previous.loading || (older && !previous.hasMore)) return
+      this.historyPages[sessionId] = { ...previous, loading: true, loadingOlder: older, error: '' }
+      const pageState = this.historyPages[sessionId]
+      try {
+        const page = await getSessionMessages(sessionId, older ? previous.nextCursor : undefined)
+        // 删除期间迟到的响应不能恢复已删除会话。
+        if (this.historyPages[sessionId] !== pageState) return
+        const rows = (page.data || []).filter(m => m.role === 'user' || m.role === 'assistant')
+        const merged = older ? [...rows, ...(this.messages[sessionId] || [])] : rows
+        const seen = new Set()
+        this.messages[sessionId] = merged.filter(m => {
+          if (!m.id) return true
+          const id = String(m.id)
+          if (seen.has(id)) return false
+          seen.add(id); return true
+        })
+        Object.assign(pageState, { loaded: true, hasMore: !!page.hasMore, nextCursor: page.nextCursor || '', stale: false })
+      } catch {
+        if (this.historyPages[sessionId] === pageState) pageState.error = '历史记录加载失败，请重试'
+      } finally {
+        if (this.historyPages[sessionId] === pageState) Object.assign(pageState, { loading: false, loadingOlder: false })
+      }
+    },
+    async loadOlderMessages() {
+      const sid = this.currentSessionId
+      if (!sid || this.isStreaming) return
+      if (this.historyPages[sid]?.stale) await this.loadHistory(sid)
+      await this.loadHistory(sid, true)
     },
 
     /** 删除会话 */
     async removeSession(sessionId) {
       await deleteSession(sessionId)
       delete this.messages[sessionId]
+      delete this.historyPages[sessionId]
       delete this.attachmentsBySession[sessionId]
       delete this.attachmentErrors[sessionId]
       if (this.currentSessionId === sessionId) this.currentSessionId = null
@@ -98,7 +126,7 @@ export const useChatStore = defineStore('chat', {
 
     /** 发送消息：建会话（首轮）→ 推本地消息 → 开 SSE 流 */
     send(text, files, mode = 'qa') {
-      if (!text || !text.trim() || this.isStreaming) return
+      if (!text || !text.trim() || this.isStreaming || this.currentHistoryPage.loading) return
       this.blankMode = false
       const sid = this.currentSessionId || this.createSessionId(text)
       this.currentSessionId = sid
@@ -278,6 +306,7 @@ export const useChatStore = defineStore('chat', {
         if (stopped && !last.content) last.content = '（已停止生成）'
       }
       this.phase = 'idle'
+      this.historyPages[sid] = { ...(this.historyPages[sid] || {}), stale: true }
       this.loadSessions()
     },
 

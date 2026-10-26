@@ -1,5 +1,11 @@
 # 数据迁移决策（本地 PG → 服务器 PG）
 
+## 聊天原文归档升级
+
+先停止旧后端，再运行 `scripts/migration-04-conversation-history.sql`，最后启动新版前后端。
+旧代码仍会物理裁剪记录，不能在迁移后继续运行。迁移只加列与索引，保留现有原文及旧摘要，不恢复以前已删除内容。
+`deploy.sh` 已接入停后端与迁移04，首次升级不能跳过数据库步骤。详情及验收见[聊天记忆说明](../docs/chat-memory.md)。
+
 ## 私有附件升级
 
 现有库先执行 `scripts/migration-03-private-attachments.sql`，再启动新后端；`deploy.sh` 已包含该幂等迁移。

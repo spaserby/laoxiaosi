@@ -117,7 +117,7 @@ async function retry(file) {
 function submit() {
   const t = text.value.trim()
   // 纯附件也可发送（无文字时用默认引导语，保证用户气泡与模型指令非空）
-  if ((!t && !attachments.value.length) || store.isStreaming || uploading.value || statusUnavailable.value || !attachmentsReady(attachments.value)) return
+  if ((!t && !attachments.value.length) || store.isStreaming || store.currentHistoryPage.loading || uploading.value || statusUnavailable.value || !attachmentsReady(attachments.value)) return
   store.send(t || (mode.value === 'review' ? '请逐章审查文档中的风险、限制条件和例外，给出原文依据与修改建议。' : '请结合我上传的附件内容进行解答。'), attachments.value, mode.value)
   text.value = ''
 }
@@ -169,7 +169,7 @@ function onKey(e) {
           <Paperclip :size="16" />
         </button>
         <!-- 发送/停止一体化：streaming 时同位置变停止；有附件无文字也可发 -->
-        <button v-if="!store.isStreaming" type="submit" class="send-btn" :disabled="(!text.trim() && !attachments.length) || uploading || statusUnavailable || !attachmentsReady(attachments)">
+        <button v-if="!store.isStreaming" type="submit" class="send-btn" :disabled="(!text.trim() && !attachments.length) || store.currentHistoryPage.loading || uploading || statusUnavailable || !attachmentsReady(attachments)">
           <span class="send-label">发起咨询</span><ArrowRight :size="14" />
         </button>
         <button v-else type="button" class="send-btn stop" title="停止生成" @click="store.stop()">

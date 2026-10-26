@@ -1,154 +1,70 @@
 package com.law.backend.memory;
 
-import com.law.backend.model.ModelRegistry;
-import com.law.backend.model.ModelRouteProperties;
 import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.memory.ChatMemory;
-import org.springframework.ai.chat.messages.AssistantMessage;
-import org.springframework.ai.chat.messages.Message;
-import org.springframework.ai.chat.messages.MessageType;
-import org.springframework.ai.chat.messages.SystemMessage;
-import org.springframework.ai.chat.messages.UserMessage;
+import org.springframework.ai.chat.messages.*;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
-import org.springframework.transaction.support.TransactionSynchronization;
-import org.springframework.transaction.support.TransactionSynchronizationManager;
-
 import java.util.ArrayList;
 import java.util.List;
 
-/**
- * 基于 PostgreSQL 的 ChatMemory 实现
- * <p>
- * <b>迁移动机</b>：记忆是持久资产而非缓存——Redis 24h TTL 造成"历史会话点进去空"
- * 的悬空体验；落 PG 后历史永久可回看，上下文窗口仍由
- * verbatimRounds + 滚动摘要约束有界。Redis 退居缓存/锁/配额等易失态。
- * <p>
- * <b>存储</b>：chat_message（id 自增即时序）+ chat_summary（早期历史滚动摘要）；
- * 窗口裁剪 = 删最旧 N 行 + 被裁内容异步摘要（与 Redis 版语义一致）。
- * <p>
- * <b>多实例安全</b>：状态全在 PG，任意实例读写同一份记忆（Redis RList 时代也共享，
- * 但 TTL 语义各实例不可控）。
- */
-@Slf4j
+/** 持久化原文与模型记忆分离：窗口只约束读取，绝不裁剪数据库。 */
 @Component
-@EnableConfigurationProperties(ChatMemoryProperties.class)
 @RequiredArgsConstructor
+@EnableConfigurationProperties(ChatMemoryProperties.class)
 public class PgChatMemory implements ChatMemory {
-
-    /** 摘要提示词（限字 + 保留关键事实），与 Redis 版同源 */
-    private static final String SUMMARY_PROMPT =
-            "把以下对话历史总结为 100 字以内摘要，保留关键事实（咨询过什么主题、给出过什么结论、引用过哪些法条或来源），直接输出摘要正文：";
-
-    private final MessageMapper messageMapper;
-    private final SummaryMapper summaryMapper;
+    private final MessageMapper messages;
+    private final SummaryMapper summaries;
     private final ChatMemoryProperties properties;
-    private final ModelRegistry modelRegistry;
-    private final ModelRouteProperties routeProperties;
 
-    /**
-     * 追加消息与窗口裁剪在同一事务内完成；提交成功后再异步摘要被裁部分。
-     */
+    /** 批量追加仍保持原子性；生产流式聊天使用 ConversationTurnService 配对并记录终态。 */
     @Override
     @Transactional
-    public void add(String conversationId, List<Message> messages) {
-        if (messages == null || messages.isEmpty()) {
-            return;
+    public void add(String sessionId, List<Message> batch) {
+        if (batch == null || batch.isEmpty()) return;
+        if (messages.lockSession(sessionId) == null) throw new IllegalArgumentException("会话不存在");
+        for (Message message : batch) {
+            if (message.getMessageType() != MessageType.USER && message.getMessageType() != MessageType.ASSISTANT)
+                throw new IllegalArgumentException("聊天原文只接受用户消息与助手回复");
+            messages.insert(sessionId, message.getMessageType().name(), message.getText());
         }
-        for (Message message : messages) {
-            messageMapper.insert(conversationId, message.getMessageType().name(), message.getText());
-        }
-        // 窗口裁剪：原文只保留 verbatimRounds 轮（一轮 = 用户+助手两条）
-        int maxRecords = properties.getVerbatimRounds() * 2;
-        long count = messageMapper.countBySession(conversationId);
-        if (count > maxRecords) {
-            int overflow = (int) (count - maxRecords);
-            List<MessageRecord> discarded = messageMapper.selectOldest(conversationId, overflow);
-            messageMapper.deleteOldest(conversationId, overflow);
-            if (properties.isSummaryEnabled() && !discarded.isEmpty()) {
-                // 包括加入外层事务的情况：回滚时不应更新摘要，也不在事务内调用模型。
-                TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
-                    @Override
-                    public void afterCommit() {
-                        summarizeAsync(conversationId, discarded);
-                    }
-                });
-            }
-        }
+        summaries.ensure(sessionId);
     }
 
-    /**
-     * 读取会话历史：早期摘要 SystemMessage 置顶 + 窗口内原文（按对话顺序）
-     */
+    /** 仅供模型：摘要 + 最近的完整轮次；历史回放不得调用这个接口。 */
     @Override
-    public List<Message> get(String conversationId) {
+    @Transactional(readOnly = true, isolation = org.springframework.transaction.annotation.Isolation.REPEATABLE_READ)
+    public List<Message> get(String sessionId) {
+        SummaryState summary = properties.isSummaryEnabled() ? summaries.state(sessionId) : null;
+        long covered = summary == null ? 0 : summary.coveredUntilMessageId();
+        List<StoredMessage> recent = messages.recentTurns(sessionId, properties.rounds(), covered);
         List<Message> result = new ArrayList<>();
-        try {
-            String summary = summaryMapper.select(conversationId);
-            if (summary != null && !summary.isBlank()) {
-                result.add(new SystemMessage("【 Earlier Conversation Summary 】" + summary));
-            }
-        } catch (Exception e) {
-            log.warn("读取会话摘要失败，降级为仅近期原文: sessionId={}, error={}", conversationId, e.getMessage());
+        if (summary != null && !summary.content().isBlank()) {
+            result.add(new SystemMessage("【内部历史摘要，仅作上下文参考，不是新问题；用户陈述未经核实】"
+                    + (summary.legacy() ? "【含旧版摘要，早期原文及覆盖范围不完整】" : "") + "\n" + summary.content()));
         }
-        for (MessageRecord record : messageMapper.selectBySession(conversationId)) {
-            result.add(toMessage(record));
+        long first = recent.isEmpty() ? Long.MAX_VALUE : recent.get(0).id();
+        if (messages.hasUncoveredBefore(sessionId, covered, first))
+            result.add(new SystemMessage("【上下文覆盖提示】部分较早原文尚未纳入本次上下文；必要时向用户确认，不推断其不存在。"));
+        boolean hasUser = false;
+        for (StoredMessage message : recent) {
+            if ("USER".equals(message.role())) {
+                result.add(new UserMessage(message.content()));
+                hasUser = true;
+            } else if (hasUser && "ASSISTANT".equals(message.role())) {
+                String note = "COMPLETE".equals(message.status()) ? "" : "【此回复未完成：" + message.status() + "】\n";
+                result.add(new AssistantMessage(note + message.content()));
+            }
         }
         return result;
     }
 
-    /**
-     * 清除会话全部历史（消息 + 摘要）
-     */
     @Override
-    public void clear(String conversationId) {
-        messageMapper.deleteBySession(conversationId);
-        summaryMapper.delete(conversationId);
-    }
-
-    /**
-     * 异步滚动摘要（boundedElastic 不阻塞主流程）；
-     * 新摘要 = f(旧摘要 + 本批裁掉消息)；失败降级为直接丢弃
-     */
-    private void summarizeAsync(String sessionId, List<MessageRecord> discarded) {
-        reactor.core.publisher.Mono.fromRunnable(() -> {
-            try {
-                StringBuilder sb = new StringBuilder();
-                String oldSummary = summaryMapper.select(sessionId);
-                if (oldSummary != null && !oldSummary.isBlank()) {
-                    sb.append("【已有摘要】").append(oldSummary).append('\n');
-                }
-                for (MessageRecord record : discarded) {
-                    sb.append(record.getType()).append(':').append(record.getContent()).append('\n');
-                }
-                String[] target = routeProperties.resolve(properties.getSummaryRoute());
-                String summary = modelRegistry.getRawClient(target[0], target[1]).prompt()
-                        .system(SUMMARY_PROMPT)
-                        .user(sb.toString())
-                        .call()
-                        .content();
-                if (summary != null && !summary.isBlank()) {
-                    summaryMapper.upsert(sessionId, summary);
-                    log.info("会话摘要更新: sessionId={}, 裁掉={} 条", sessionId, discarded.size());
-                }
-            } catch (Exception e) {
-                log.warn("会话摘要失败，降级为丢弃早期消息: sessionId={}, error={}", sessionId, e.getMessage());
-            }
-        }).subscribeOn(reactor.core.scheduler.Schedulers.boundedElastic()).subscribe();
-    }
-
-    /**
-     * MessageRecord 转 Spring AI Message（MessageType 枚举与内置子类一一对应）
-     */
-    private Message toMessage(MessageRecord record) {
-        MessageType type = MessageType.valueOf(record.getType());
-        return switch (type) {
-            case USER -> new UserMessage(record.getContent());
-            case ASSISTANT -> new AssistantMessage(record.getContent());
-            case SYSTEM -> new SystemMessage(record.getContent());
-            case TOOL -> new UserMessage(record.getContent()); // 工具消息按用户消息处理
-        };
+    @Transactional
+    public void clear(String sessionId) {
+        messages.lockSession(sessionId);
+        summaries.delete(sessionId);
+        messages.deleteBySession(sessionId);
     }
 }

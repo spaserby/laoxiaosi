@@ -19,9 +19,7 @@ import com.law.backend.tool.ToolBudget;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.memory.ChatMemory;
-import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
-import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.openai.OpenAiChatOptions;
 import org.springframework.http.codec.ServerSentEvent;
@@ -68,6 +66,7 @@ public class ChatService {
 
     /** 会话记忆 */
     private final ChatMemory chatMemory;
+    private final com.law.backend.memory.ConversationTurnService conversationTurns;
 
     /** 确定性安全层规则引擎（拒答拦截/紧急置顶/免责声明，零 LLM 调用） */
     private final SafetyGuard safetyGuard;
@@ -75,9 +74,6 @@ public class ChatService {
     /** 强制检索打底用的检索服务与开关（grounded-ReAct，legal 路线进模型前必检） */
     private final KnowledgeRetrievalService retrievalService;
     private final RagProperties ragProperties;
-
-    /** 前端配套：会话索引服务（每轮对话 touch，支撑侧栏会话列表） */
-    private final SessionIndexService sessionIndexService;
 
     /** Reviewer 质量门（legal 路线回答生成后规则审校，不通过自动重试一轮） */
     private final AnswerReviewer answerReviewer;
@@ -316,13 +312,13 @@ public class ChatService {
             }
         }
 
-        StringBuilder assistantReply = new StringBuilder();
+        var recorder = new com.law.backend.memory.ChatTurnRecorder(conversationTurns);
         AtomicReference<ChatContext> ctxRef = new AtomicReference<>();
         return Flux.defer(() -> {
                     // 思考过程可见化：prepare 在 boundedElastic 线程实时发 stage 事件进 unicast sink，
                     // 前端首 token 前即可看到"路由/改写/检索/生成"进度，消除黑盒转圈
                     Sinks.Many<String> stageSink = Sinks.many().unicast().onBackpressureBuffer();
-                    Mono<ChatContext> prepared = Mono.fromCallable(() -> prepare(sessionId, userMessage, stageSink, fileIds, owner, fullReview))
+                    Mono<ChatContext> prepared = Mono.fromCallable(() -> prepare(sessionId, userMessage, stageSink, fileIds, owner, fullReview, recorder))
                             // 阻塞预处理隔离到弹性线程池，服务器线程不被首 token 前的同步 IO 独占
                             .subscribeOn(Schedulers.boundedElastic())
                             .doFinally(s -> stageSink.tryEmitComplete())
@@ -332,7 +328,7 @@ public class ChatService {
                             // 收集 token 用于完成后持久化（重试标记清空第一轮；citation/stage 标记不入记忆）
                             .doOnNext(token -> {
                                 if (RETRY_MARKER.equals(token)) {
-                                    assistantReply.setLength(0);
+                                    recorder.reset();
                                     // 审校重试追加预算（质量门触发的系统行为，非用户行为）
                                     ChatContext retryCtx = ctxRef.get();
                                     if (retryCtx != null) {
@@ -351,7 +347,7 @@ public class ChatService {
                                 if (token.startsWith(CITATION_MARKER) || token.startsWith(STAGE_MARKER) || token.startsWith(ATTACHMENT_MARKER)) {
                                     return;
                                 }
-                                assistantReply.append(token);
+                                recorder.append(token);
                                 // 回答长度 + 首 token 时间（think_ms = 首token - 请求开始）
                                 if (mc != null) {
                                     mc.metrics().answerLen().addAndGet(token.length());
@@ -361,7 +357,7 @@ public class ChatService {
                                 }
                             })
                             // stop 标志出现（任意实例写入）→ 取消上游（cancel 传播到大模型，真正中断）
-                            .takeUntilOther(stopTrigger(sessionId))
+                            .takeUntilOther(stopTrigger(sessionId).doOnNext(stopped -> recorder.mark("STOPPED")))
                             // 哨兵标记转 SSE 事件（retry / citation / stage），其余为 token
                             .map(token -> {
                                 if (RETRY_MARKER.equals(token)) {
@@ -386,26 +382,29 @@ public class ChatService {
                             })
                             // 异常降级为 error 事件；流失败回滚配额（失败请求不浪费用户额度）
                             .onErrorResume(e -> {
+                                recorder.mark("FAILED");
                                 log.error("流式生成异常: sessionId={}, type={}", sessionId, e.getClass().getSimpleName());
                                 quotaService.rollback(quotaCtx);
                                 return Flux.just(ServerSentEvent.<String>builder((e instanceof IllegalArgumentException || e instanceof SessionAccessDeniedException) ? e.getMessage() : "生成失败，请稍后重试").event(EVENT_ERROR).build());
                             })
-                            // 正常完成/停止后：保存助手回复 + 输出 metrics 日志 + 发送 done 标记
-                            // ★ concatWith 后段跑在上一段的 onComplete 线程（LLM 流的 reactor-http-nio-*），
-                            //   chatMemory.add 是同步 JDBC（insert/count/select/delete 多次往返），
-                            //   必须切到弹性线程，否则每轮对话收尾都会阻塞 event loop
+                            // 原文落库后才发送 done；数据库 IO 在弹性线程执行。
                             .concatWith(Mono.<ServerSentEvent<String>>fromCallable(() -> {
                                 log.info("流式生成完成: sessionId={}", sessionId);
-                                if (assistantReply.length() > 0) {
-                                    chatMemory.add(sessionId, List.of(new AssistantMessage(assistantReply.toString())));
-                                }
+                                recorder.persist();
                                 logMetrics(sessionId, ctxRef.get());
                                 return ServerSentEvent.<String>builder("[DONE]").event(EVENT_DONE).build();
                             }).subscribeOn(Schedulers.boundedElastic()))
                             // 订阅时清除上轮残留 stop 标志；无论完成/错误/取消都清理
                             // ★ 用 deleteAsync 而非 delete：Redisson 同步 API 是网络 IO，同样不能在 event loop 上等待
                             .doOnSubscribe(s -> redissonClient.getBucket(STOP_KEY_PREFIX + sessionId).deleteAsync())
-                            .doFinally(signal -> redissonClient.getBucket(STOP_KEY_PREFIX + sessionId).deleteAsync());
+                            .doFinally(signal -> {
+                                redissonClient.getBucket(STOP_KEY_PREFIX + sessionId).deleteAsync();
+                                if (signal == reactor.core.publisher.SignalType.CANCEL) {
+                                    recorder.mark("INTERRUPTED");
+                                    Mono.fromRunnable(recorder::persist).subscribeOn(Schedulers.boundedElastic())
+                                            .subscribe(null, e -> log.warn("断线轮次收尾失败，等待后台恢复: type={}", e.getClass().getSimpleName()));
+                                }
+                            });
                 });
     }
 
@@ -414,10 +413,11 @@ public class ChatService {
      * 记忆读写/会话索引/路由/规划/打底检索/引用登记
      */
     private ChatContext prepare(String sessionId, String userMessage, Sinks.Many<String> stages,
-                                List<String> fileIds, SessionOwnershipService.Owner owner, boolean fullReview) {
+                                List<String> fileIds, SessionOwnershipService.Owner owner, boolean fullReview,
+                                com.law.backend.memory.ChatTurnRecorder recorder) {
         emitStage(stages, "加载会话与附件…");
         ChatFileService.Turn turn = chatFileService.turn(sessionId, owner, fileIds, userMessage);
-        List<Message> history = chatMemory.get(sessionId);
+        List<Message> history = SessionOwnershipService.ANON.equals(owner.key()) ? List.of() : chatMemory.get(sessionId);
         List<org.springframework.ai.content.Media> media = fullReview ? List.of() : turn.images().stream()
                 .map(si -> new org.springframework.ai.content.Media(org.springframework.util.MimeTypeUtils.parseMimeType(si.mime()),
                         new org.springframework.core.io.ByteArrayResource(si.bytes()))).toList();
@@ -452,8 +452,8 @@ public class ChatService {
         String modelMessage = attachBlock.isEmpty() ? userMessage : attachBlock + "\n【用户问题】\n" + userMessage;
         contextBudget.verify(grounded.prompt(), modelMessage, allocation.history(), media.size());
         // 附件校验/检索失败不留下半条用户记录；全文只留在私有附件表。
-        chatMemory.add(sessionId, List.of(new UserMessage(userMessage + turn.memorySuffix())));
-        sessionIndexService.touch(sessionId, userMessage, owner.key());
+        if (!SessionOwnershipService.ANON.equals(owner.key()))
+            recorder.begin(sessionId, owner.key(), userMessage + turn.memorySuffix());
         emitStage(stages, "生成回答…");
         ChatMetrics metrics = new ChatMetrics(new ToolBudget(turn.files().isEmpty() ? routed.maxToolCalls() : 0), System.currentTimeMillis());
         return new ChatContext(sessionId, modelMessage, allocation.history(), routed, grounded.prompt(), grounded.citations(), registry,

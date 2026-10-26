@@ -5,8 +5,6 @@ import com.law.backend.service.SessionIndexService;
 import com.law.backend.service.SessionOwnershipService;
 import com.law.backend.util.Blocking;
 import lombok.RequiredArgsConstructor;
-import org.springframework.ai.chat.memory.ChatMemory;
-import org.springframework.ai.chat.messages.Message;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
@@ -15,6 +13,7 @@ import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ServerWebExchange;
 import reactor.core.publisher.Mono;
@@ -39,7 +38,7 @@ import java.util.Map;
 public class SessionController {
 
     private final SessionIndexService sessionIndexService;
-    private final ChatMemory chatMemory;
+    private final com.law.backend.memory.ConversationHistoryService historyService;
     private final SessionOwnershipService ownershipService;
     private final com.law.backend.service.ChatFileService chatFileService;
 
@@ -57,19 +56,18 @@ public class SessionController {
         });
     }
 
-    /** 会话历史消息：Spring AI Message 转 {role, content} DTO（非本人会话 → 403） */
+    /** 用户原文历史分页；内部摘要与工具消息永远不进入响应。 */
     @GetMapping("/{sessionId}/messages")
     public Mono<Map<String, Object>> messages(@PathVariable("sessionId") String sessionId,
-                                              @AuthenticationPrincipal Long userId, ServerWebExchange exchange) {
-        // 归属校验 + chatMemory.get（PG 读摘要与窗口原文，两次 SQL）都是阻塞调用
+                                              @AuthenticationPrincipal Long userId, ServerWebExchange exchange,
+                                              @RequestParam(value = "beforeMessageId", required = false) Long before,
+                                              @RequestParam(value = "limit", defaultValue = "50") int limit) {
         return Blocking.<Map<String, Object>>call(() -> {
             var owner = ownershipService.resolve(exchange.getRequest().getHeaders(), userId);
             ownershipService.claim(sessionId, owner);
             ownershipService.require(sessionId, owner);
-            List<Map<String, String>> data = chatMemory.get(sessionId).stream()
-                    .map(this::toDto)
-                    .toList();
-            return Map.of("code", 200, "data", data);
+            var page = historyService.page(sessionId, owner, before, limit);
+            return Map.of("code", 200, "data", page.data(), "hasMore", page.hasMore(), "nextCursor", page.nextCursor());
         });
     }
 
@@ -77,14 +75,12 @@ public class SessionController {
     @DeleteMapping("/{sessionId}")
     public Mono<Map<String, Object>> delete(@PathVariable("sessionId") String sessionId,
                                             @AuthenticationPrincipal Long userId, ServerWebExchange exchange) {
-        // clear（删消息 + 摘要）与 remove（删索引）共 3 次 SQL，隔离到弹性线程
         return Blocking.<Map<String, Object>>call(() -> {
             SessionOwnershipService.Owner owner = ownershipService.resolve(exchange.getRequest().getHeaders(), userId);
             ownershipService.claim(sessionId, owner);
             ownershipService.require(sessionId, owner);
             chatFileService.deleteSession(sessionId, owner);
-            chatMemory.clear(sessionId);
-            sessionIndexService.remove(sessionId, owner.key());
+            historyService.delete(sessionId, owner);
             return Map.of("code", 200, "message", "ok");
         });
     }
@@ -95,10 +91,9 @@ public class SessionController {
         return ResponseEntity.status(HttpStatus.FORBIDDEN).body(Map.of("message", e.getMessage()));
     }
 
-    /** Message → 前端 DTO（role 小写：user/assistant/system） */
-    private Map<String, String> toDto(Message message) {
-        return Map.of(
-                "role", message.getMessageType().name().toLowerCase(),
-                "content", message.getText() == null ? "" : message.getText());
+    @ExceptionHandler(IllegalArgumentException.class)
+    public ResponseEntity<Map<String, String>> handleInvalid(IllegalArgumentException e) {
+        return ResponseEntity.badRequest().body(Map.of("message", e.getMessage()));
     }
+
 }

@@ -87,6 +87,7 @@ const topScore = computed(() => {
     </div>
     <div v-else class="ai-body">
       <div class="md" v-html="html"></div>
+      <p v-if="message.status && !['COMPLETE', 'RUNNING'].includes(message.status)" class="a-note">本轮生成未完成，以上为已保存的部分回复。</p>
       <span v-if="message.streaming" class="cursor"></span>
       <div v-if="message.attachmentContext" class="attachment-evidence">
         <p>附件覆盖：{{ message.attachmentContext.selectedSections }}/{{ message.attachmentContext.totalSections }} 个章节
