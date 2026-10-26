@@ -1,0 +1,86 @@
+{
+  "version": "synthetic-attachment-v1",
+  "contextBudget": 8000,
+  "documents": [
+    {"id":"deposit","name":"合成服务合同","segments":[
+      {"heading":"第一条 服务记录","padding":22000},
+      {"heading":"第二条 保证金","id":"deposit_amount","text":"本项目的履约保证金为7391元。"},
+      {"id":"deposit_time","text":"验收完成且双方签署终止确认单后，保证金在七个自然日内退还。"},
+      {"padding":700},
+      {"heading":"第三条 抵扣例外","id":"deposit_exception","text":"但存在未结清费用时，应先提供费用明细，再抵扣对应金额，余款仍按前条期限退还。"},
+      {"heading":"第四条 档案交接","id":"deposit_delivery","text":"档案移交采用加密压缩包，解压方式由双方另行约定。"},
+      {"padding":4000}
+    ]},
+    {"id":"warranty","name":"合成设备保修说明","segments":[
+      {"heading":"第一条 设备背景","padding":16000},
+      {"heading":"第二条 保修规则","id":"warranty_term","text":"样机保修期限为七年，自最终验收单签署之日起计算。"},
+      {"padding":1200},
+      {"heading":"第三条 特殊处理","id":"warranty_exception","text":"因使用方擅自改装造成的损坏不适用前条保修，但原厂确认的制造缺陷仍由供货方承担。"},
+      {"id":"warranty_response","text":"故障通知发出后，供货方应在三十六小时内书面响应。"},
+      {"padding":6000}
+    ]},
+    {"id":"procurement","name":"合成采购付款条款","segments":[
+      {"heading":"第一条 一般约定","padding":14000},
+      {"heading":"第二条 付款条件","id":"purchase_amount","text":"第二阶段采购款为8623元，不含第三阶段的培训费用。"},
+      {"id":"purchase_condition","text":"第二阶段付款必须同时满足设备验收合格、发票送达和保密清单交接三项条件。"},
+      {"padding":2600},
+      {"heading":"第三条 暂缓支付","id":"purchase_exception","text":"如抽检不合格，买方可暂缓支付第二阶段款，直至复检合格；该暂缓不产生逾期付款责任。"},
+      {"id":"purchase_training","text":"第三阶段培训款为1357元，在培训签到表确认后支付。"},
+      {"padding":6000}
+    ]},
+    {"id":"logs","name":"合成连续运维记录","segments":[
+      {"heading":"运行记录","padding":11000},
+      {"hardPadding":840,"id":"logs_retention","text":"日志保存期限为十九个月，保存期从工单关闭之日开始计算。","hardSuffix":1900},
+      {"hardPadding":1200,"id":"logs_exception","text":"涉及尚未解决的争议时，相关日志延长保存至争议处理结束后的第九十日。","hardSuffix":1900},
+      {"id":"logs_copy","text":"导出副本须记录校验摘要，原始记录不得因导出而删除。"},
+      {"padding":9000}
+    ]},
+    {"id":"lease","name":"合成场地使用协议","segments":[
+      {"heading":"第一条 场地背景","padding":18000},
+      {"heading":"第二条 费用","id":"lease_rent","text":"场地月使用费为4286元，每月第五个自然日前支付。"},
+      {"id":"lease_deposit","text":"另收场地清洁押金975元，与月使用费分别结算。"},
+      {"padding":1000},
+      {"heading":"第三条 押金结算","id":"lease_refund","text":"清洁押金在钥匙返还并完成现场交接后十二个工作日内退回。"},
+      {"id":"lease_exception","text":"场地设施存在交接前已记录的损坏时，不得从清洁押金中扣除该项维修费用。"},
+      {"padding":5000}
+    ]},
+    {"id":"main","name":"合成培训主协议","segments":[
+      {"heading":"第一条 培训背景","padding":18000},
+      {"heading":"第二条 退款基准","id":"training_base","text":"主协议约定，开班前十五日提出取消申请可全额退还培训费。"},
+      {"id":"training_fee","text":"本次培训费用为6532元，材料费另计。"},
+      {"padding":7000}
+    ]},
+    {"id":"supplement","name":"合成培训补充协议","segments":[
+      {"heading":"第一条 补充说明","padding":6000},
+      {"heading":"第二条 优先适用","id":"training_override","text":"本补充协议优先于主协议，仅本期培训的取消申请期限调整为开班前九日。"},
+      {"id":"training_exception","text":"如已交付实名定制材料，只能扣除有凭证的材料实际成本，其余培训费应当退回。"},
+      {"padding":4000}
+    ]}
+  ],
+  "questions":[
+    {"id":"D01","split":"dev","kind":"tail","docs":["deposit"],"question":"履约保证金金额多少，什么条件满足后多久退还？","evidence":["deposit_amount","deposit_time"],"patterns":["7391","验收","终止确认","七|7"]},
+    {"id":"D02","split":"dev","kind":"exception","docs":["deposit"],"question":"保证金存在未结费用时可以直接全额不退吗？需要怎样处理？","evidence":["deposit_time","deposit_exception"],"patterns":["明细","抵扣","余款|剩余","七|7"]},
+    {"id":"D03","split":"dev","kind":"paraphrase","docs":["deposit"],"question":"双方如何交付归档资料，文中能确定解压方式吗？","evidence":["deposit_delivery"],"patterns":["加密","压缩包","另行约定|无法确定|不能确定"]},
+    {"id":"D04","split":"dev","kind":"no_answer","docs":["deposit"],"question":"根据提供材料，能确定发生纠纷后唯一有管辖权的法院名称吗？","evidence":[],"patterns":[]},
+    {"id":"D05","split":"dev","kind":"condition","docs":["warranty"],"question":"样机保修持续多久，从哪天起算？","evidence":["warranty_term"],"patterns":["七年|7年","最终验收"]},
+    {"id":"D06","split":"dev","kind":"exception","docs":["warranty"],"question":"样机保修期限多久，擅自改装和制造缺陷分别是否适用保修？","evidence":["warranty_term","warranty_exception"],"patterns":["七年|7年","擅自改装","不适用|不属于|不保修","制造缺陷"]},
+    {"id":"D07","split":"dev","kind":"paraphrase","docs":["warranty"],"question":"设备故障报给供货方后，书面回复的时限是多少？","evidence":["warranty_response"],"patterns":["三十六|36","小时","书面"]},
+    {"id":"D08","split":"dev","kind":"no_answer","docs":["warranty"],"question":"根据提供材料，能确定这台设备的电池额定容量是多少毫安时吗？","evidence":[],"patterns":[]},
+    {"id":"D09","split":"dev","kind":"condition","docs":["procurement"],"question":"第二阶段采购款多少钱，需要满足哪些付款条件？","evidence":["purchase_amount","purchase_condition"],"patterns":["8623","验收","发票","保密清单"]},
+    {"id":"D10","split":"dev","kind":"exception","docs":["procurement"],"question":"第二阶段款通常满足哪些条件才支付，抽检不合格暂缓时是否有逾期责任？","evidence":["purchase_condition","purchase_exception"],"patterns":["验收","发票","保密清单","复检","不产生|不承担|无需承担|不构成","逾期"]},
+    {"id":"D11","split":"dev","kind":"distractor","docs":["procurement"],"question":"培训款与第二阶段采购款有什么区别，培训款何时支付？","evidence":["purchase_amount","purchase_training"],"patterns":["8623","1357","签到表"]},
+    {"id":"D12","split":"dev","kind":"no_answer","docs":["procurement"],"question":"根据提供材料，能确定采购设备的出厂序列号吗？","evidence":[],"patterns":[]},
+    {"id":"D13","split":"dev","kind":"hard_cut","docs":["logs"],"question":"日志保留多长时间，从哪个业务事件开始算？","evidence":["logs_retention"],"patterns":["十九|19","个月|月","工单关闭"]},
+    {"id":"D14","split":"dev","kind":"hard_cut_exception","docs":["logs"],"question":"日志遇到尚未解决的争议时是否仍按普通保存期限清理？","evidence":["logs_retention","logs_exception"],"patterns":["十九|19","争议","九十|90"]},
+    {"id":"D15","split":"dev","kind":"condition","docs":["logs"],"question":"导出日志后可以把原记录删掉吗，副本要记录什么？","evidence":["logs_copy"],"patterns":["校验摘要","不得|不能|不可"]},
+    {"id":"D16","split":"dev","kind":"no_answer","docs":["logs"],"question":"根据提供材料，能确定日志所在硬盘的制造厂商名称吗？","evidence":[],"patterns":[]},
+    {"id":"H01","split":"holdout","kind":"distractor","docs":["lease"],"question":"月使用费与清洁押金各是多少，月费哪天之前交？","evidence":["lease_rent","lease_deposit"],"patterns":["4286","975","第五|5"]},
+    {"id":"H02","split":"holdout","kind":"condition","docs":["lease"],"question":"清洁押金金额、退款条件与期限分别是什么？","evidence":["lease_deposit","lease_refund"],"patterns":["975","钥匙","现场交接","十二|12","工作日"]},
+    {"id":"H03","split":"holdout","kind":"exception","docs":["lease"],"question":"交接前已经登记的设施损坏，维修费可否扣清洁押金？","evidence":["lease_exception"],"patterns":["不得|不能|不可","交接前"]},
+    {"id":"H04","split":"holdout","kind":"no_answer","docs":["lease"],"question":"根据提供材料，能确定场地所在楼层的消防验收编号吗？","evidence":[],"patterns":[]},
+    {"id":"H05","split":"holdout","kind":"cross_document","docs":["main","supplement"],"question":"主协议和补充协议分别要求提前几日取消培训，冲突时本期适用哪个？","evidence":["training_base","training_override"],"patterns":["十五|15","九|9","补充协议"]},
+    {"id":"H06","split":"holdout","kind":"cross_document_exception","docs":["main","supplement"],"question":"开班前九日取消本期培训但已拿到实名定制材料，6532元培训费是否一分不退？","evidence":["training_fee","training_override","training_exception"],"patterns":["6532","凭证","实际成本","其余|剩余|余款"]},
+    {"id":"H07","split":"holdout","kind":"cross_document","docs":["main","supplement"],"question":"培训费用是多少、是否包含材料费，定制材料的扣费根据什么？","evidence":["training_fee","training_exception"],"patterns":["6532","另计|不含|不包含","凭证","实际成本"]},
+    {"id":"H08","split":"holdout","kind":"no_answer","docs":["main","supplement"],"question":"根据提供材料，能确定授课讲师的职业资格证书编号吗？","evidence":[],"patterns":[]}
+  ]
+}

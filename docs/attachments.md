@@ -67,3 +67,5 @@ mvn -pl lab-chat-backend -Dtest=AttachmentPostgresTest \
 
 上线前还需用真实模型验证 OCR、embedding 和精排兼容性，以合成金标评估尾部召回、跨条款条件/例外召回、无答案拒答、引用定位与全文覆盖。
 分块参数是初始值，不能据离线功能测试宣称检索质量已经达到最优。
+
+合成金标、固定预算分块对照、真实模型缓存回放与指标口径见[附件质量评估](attachment-evaluation.md)。
