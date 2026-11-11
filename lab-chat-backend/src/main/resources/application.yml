@@ -237,7 +237,7 @@ legal:
       sms-resend-interval-seconds: 60
       sms-daily-limit: 10
       sms-max-verify-fails: 5
-      # 短信通道切换——mock（默认，只写日志）| aliyun（阿里云个人版短信认证 dypnsapi）
+      # 短信通道切换——mock（默认，不投递、不记录验证码）| aliyun（阿里云个人版短信认证 dypnsapi）
       # 注意：本段必须留在 auth 下（6 空格缩进），曾因 files 段插入位置错误被吞导致 mock 生效
       sms-provider: aliyun
       aliyun:

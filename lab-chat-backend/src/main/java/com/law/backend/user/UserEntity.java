@@ -33,6 +33,9 @@ public class UserEntity {
     /** 0=正常 1=封禁 */
     private Integer status;
 
+    /** 改密时原子递增，撤销此前签发的所有凭据。 */
+    private long authVersion;
+
     /** 头像选择编号 1-12（对应前端静态资源 public/avatars/n.jpg；NULL=默认图标） */
     private String avatar;
 

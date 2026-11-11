@@ -34,6 +34,9 @@ class ConversationPostgresTest {
             jdbc.update("insert into chat_summary(session_id,content) values('synthetic-pg','合成旧版摘要，不还原原文')");
             String migration = Files.readString(Path.of("../scripts/migration-04-conversation-history.sql"));
             jdbc.execute(migration); jdbc.execute(migration);
+            jdbc.execute("create table app_user(id bigserial primary key)");
+            String securityMigration = Files.readString(Path.of("../scripts/migration-05-security-and-evidence.sql"));
+            jdbc.execute(securityMigration); jdbc.execute(securityMigration);
             var config = new org.apache.ibatis.session.Configuration(new Environment("memory-pg",new JdbcTransactionFactory(),scoped));
             config.setMapUnderscoreToCamelCase(true);
             config.addMapper(MessageMapper.class); config.addMapper(SummaryMapper.class); config.addMapper(SessionMapper.class);

@@ -6,6 +6,7 @@ ROOT = Path(__file__).resolve().parents[1]
 template = (ROOT / "scripts/init-template.sql").read_text(encoding="utf-8")
 schema = (ROOT / "scripts/pg-schema.sql").read_text(encoding="utf-8")
 schema += "\n" + (ROOT / "scripts/migration-04-conversation-history.sql").read_text(encoding="utf-8")
+schema += "\n" + (ROOT / "scripts/migration-05-security-and-evidence.sql").read_text(encoding="utf-8")
 target = ROOT / "db/init.sql"
 current = target.read_text(encoding="utf-8")
 marker = "-- 数据区：法条底账"

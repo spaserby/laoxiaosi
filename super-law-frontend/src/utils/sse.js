@@ -45,6 +45,7 @@ export class SseClient {
   }
 
   _emit(type, data) {
+    if (this._closed) return
     const list = this._handlers[type]
     if (!list || !list.length) return
     for (const fn of list) {
@@ -94,6 +95,7 @@ export class SseClient {
         buf += decoder.decode(value, { stream: true })
         let idx
         while ((idx = buf.indexOf('\n\n')) >= 0) {
+          if (this._closed) break
           this._dispatchBlock(buf.slice(0, idx))
           buf = buf.slice(idx + 2)
         }

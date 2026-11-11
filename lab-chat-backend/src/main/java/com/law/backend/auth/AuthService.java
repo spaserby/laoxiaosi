@@ -53,10 +53,7 @@ public class AuthService {
 
         /** 手机号脱敏：138****8000（前端展示与日志安全） */
         private static String maskPhone(String phone) {
-            if (phone == null || phone.length() != 11) {
-                return phone;
-            }
-            return phone.substring(0, 3) + "****" + phone.substring(7);
+            return phone == null ? null : com.law.backend.util.PrivacyLog.phone(phone);
         }
     }
 
@@ -88,7 +85,7 @@ public class AuthService {
         user.setStatus(0);
         user.setCreatedAt(LocalDateTime.now());
         userMapper.insert(user);
-        log.info("用户注册成功: userId={}, username={}", user.getId(), username);
+        log.info("用户注册成功: userId={}", user.getId());
         return issue(user);
     }
 
@@ -138,6 +135,7 @@ public class AuthService {
         if (user == null) {
             throw new IllegalArgumentException("用户不存在");
         }
+        if (user.getStatus() != null && user.getStatus() != 0) throw new IllegalArgumentException("账号不可用");
         return UserDto.of(user);
     }
 
@@ -162,7 +160,7 @@ public class AuthService {
     }
 
     private AuthResult issue(UserEntity user) {
-        String token = jwtService.generate(user.getId(), user.getUsername(), user.getRole());
+        String token = jwtService.generate(user.getId(), user.getUsername(), user.getRole(), user.getAuthVersion());
         return new AuthResult(token, UserDto.of(user));
     }
 

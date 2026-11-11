@@ -11,6 +11,7 @@ import java.util.*;
 @Service
 @RequiredArgsConstructor
 public class ConversationHistoryService {
+    private static final com.fasterxml.jackson.databind.ObjectMapper JSON = new com.fasterxml.jackson.databind.ObjectMapper();
     private final MessageMapper messages;
     private final SummaryMapper summaries;
     private final SessionMapper sessions;
@@ -24,10 +25,24 @@ public class ConversationHistoryService {
         boolean more = rows.size() > limit;
         var visible = new ArrayList<>(rows.subList(0, Math.min(limit, rows.size())));
         Collections.reverse(visible);
-        List<Map<String,Object>> data = visible.stream().map(m -> Map.<String,Object>of(
+        List<Map<String,Object>> data = visible.stream().map(m -> {
+            Map<String,Object> dto = new LinkedHashMap<>(Map.<String,Object>of(
                 "id", Long.toString(m.id()), "role", m.role().toLowerCase(Locale.ROOT),
                 "content", Objects.requireNonNullElse(m.content(), ""), "createdAt", m.createdAt() == null ? "" : m.createdAt().toString(),
-                "status", m.status(), "turnId", Objects.requireNonNullElse(m.turnId(), ""))).toList();
+                "status", m.status(), "turnId", Objects.requireNonNullElse(m.turnId(), "")));
+            dto.put("evidenceAvailable", false);
+            if ("ASSISTANT".equals(m.role())) {
+                try {
+                    var json = JSON.readTree(Objects.requireNonNullElse(m.evidence(), "{}"));
+                    if (json != null && json.path("version").asInt() == 1) {
+                        dto.put("evidenceAvailable", true);
+                        if (json.path("citations").isArray()) dto.put("citations", JSON.convertValue(json.get("citations"), List.class));
+                        if (json.path("attachmentContext").isObject()) dto.put("attachmentContext", JSON.convertValue(json.get("attachmentContext"), Map.class));
+                    }
+                } catch (java.io.IOException ignored) { /* 旧记录或无效元数据不冒充可溯源证据。 */ }
+            }
+            return dto;
+        }).toList();
         return new Page(data, more, more ? Long.toString(visible.get(0).id()) : "");
     }
     @Transactional

@@ -329,11 +329,6 @@ public class ChatService {
                             .doOnNext(token -> {
                                 if (RETRY_MARKER.equals(token)) {
                                     recorder.reset();
-                                    // 审校重试追加预算（质量门触发的系统行为，非用户行为）
-                                    ChatContext retryCtx = ctxRef.get();
-                                    if (retryCtx != null) {
-                                        retryCtx.metrics().budget().grant(routeProperties.getRetryBudgetGrant());
-                                    }
                                     return;
                                 }
                                 ChatContext mc = ctxRef.get();
@@ -344,7 +339,9 @@ public class ChatService {
                                     }
                                     return;
                                 }
-                                if (token.startsWith(CITATION_MARKER) || token.startsWith(STAGE_MARKER) || token.startsWith(ATTACHMENT_MARKER)) {
+                                if (token.startsWith(CITATION_MARKER)) { recorder.citation(token.substring(CITATION_MARKER.length())); return; }
+                                if (token.startsWith(ATTACHMENT_MARKER)) { recorder.attachment(token.substring(ATTACHMENT_MARKER.length())); return; }
+                                if (token.startsWith(STAGE_MARKER)) {
                                     return;
                                 }
                                 recorder.append(token);
@@ -520,18 +517,13 @@ public class ChatService {
         Flux<String> tail = safetyGuard.shouldAppendDisclaimer(ctx.userMessage())
                 ? Flux.just(safetyGuard.disclaimer()) : Flux.empty();
 
-        Flux<String> firstRound = generate(ctx, ctx.systemPrompt(), ctx.routed())
-                // 主路线模型异常时切换 fallback 路线重试（同一上下文、各自预算）
-                .onErrorResume(e -> {
-                    log.warn("主路线模型异常，切换 fallback: sessionId={}, error={}", ctx.sessionId(), e.getMessage());
-                    return generate(ctx, ctx.systemPrompt(), modelRouter.fallback());
-                });
+        Flux<String> firstRound = generateWithFallback(ctx, ctx.systemPrompt());
 
         // 非过审路线直接放行；过审路线生成完毕后规则审校
         if (!answerReviewer.needReview(ctx.routed().route())) {
             StringBuilder replyBuf = new StringBuilder();
             return head.concatWith(citationFlow)
-                    .concatWith(firstRound.doOnNext(replyBuf::append))
+                    .concatWith(firstRound.doOnNext(token -> collectAttempt(replyBuf, token)))
                     // 无打底命中时，从回答文本解析法条引用反查底账补推 citation（卡片带条文内容）
                     .concatWith(enrichCitationsFlow(ctx, replyBuf))
                     .concatWith(tail);
@@ -555,20 +547,48 @@ public class ChatService {
                 return tail;
             }
             ctx.metrics().reviewNote("retry: " + result.reason());
+            // 仅质量门重试追加一次预算；传输失败切换备用模型只复位输出，不扩大工具额度。
+            ctx.metrics().budget().grant(routeProperties.getRetryBudgetGrant());
             log.info("审校不通过，重试一轮: sessionId={}, reason={}", ctx.sessionId(), result.reason());
             String feedbackPrompt = ctx.systemPrompt()
                     + "\n\n【审校反馈】上一次回答因「" + result.reason()
                     + "」被驳回。请重新回答：引用必须来自系统注入的检索条文或 searchLaw/webSearch 的检索结果，"
                     + "不得编造条文或来源。";
-            return Flux.just(RETRY_MARKER)
-                    .concatWith(generate(ctx, feedbackPrompt, ctx.routed())
-                            .onErrorResume(e -> generate(ctx, feedbackPrompt, modelRouter.fallback())))
+            StringBuilder retryBuf = new StringBuilder();
+            return restartAttempt(ctx)
+                    .concatWith(generateWithFallback(ctx, feedbackPrompt).doOnNext(token -> collectAttempt(retryBuf, token)))
+                    .concatWith(enrichCitationsFlow(ctx, retryBuf))
                     .concatWith(tail);
         }).subscribeOn(Schedulers.boundedElastic());
         return head.concatWith(citationFlow)
-                .concatWith(firstRound.doOnNext(roundBuf::append))
+                .concatWith(firstRound.doOnNext(token -> collectAttempt(roundBuf, token)))
                 .concatWith(enrichCitationsFlow(ctx, roundBuf))
                 .concatWith(reviewStep);
+    }
+
+    private Flux<String> generateWithFallback(ChatContext ctx, String prompt) {
+        return Flux.defer(() -> generate(ctx, prompt, ctx.routed())).onErrorResume(error -> {
+            log.warn("生成尝试失败，重置后切换备用路线: type={}", error.getClass().getSimpleName());
+            return restartAttempt(ctx).concatWith(Flux.defer(() -> generate(ctx, prompt, modelRouter.fallback())));
+        });
+    }
+
+    private Flux<String> restartAttempt(ChatContext ctx) {
+        List<String> events = new ArrayList<>();
+        events.add(RETRY_MARKER);
+        if (ctx.urgentHead() != null) events.add(ctx.urgentHead() + "\n\n");
+        if (!ctx.groundedCitations().isEmpty()) events.add(CITATION_MARKER + citationsToJson(ctx.groundedCitations()));
+        if (ctx.attachments().totalSections() > 0 || !ctx.attachments().warnings().isEmpty()) {
+            try { events.add(ATTACHMENT_MARKER + OBJECT_MAPPER.writeValueAsString(ctx.attachments())); }
+            catch (java.io.IOException e) { return Flux.error(new IllegalStateException("证据序列化失败")); }
+        }
+        return Flux.fromIterable(events);
+    }
+
+    private void collectAttempt(StringBuilder buffer, String token) {
+        if (RETRY_MARKER.equals(token)) buffer.setLength(0);
+        else if (!token.startsWith(CITATION_MARKER) && !token.startsWith(ATTACHMENT_MARKER)
+                && !token.startsWith(REASONING_MARKER) && !token.startsWith(STAGE_MARKER)) buffer.append(token);
     }
 
     /** 回答文本中的法条引用（与前端正则兜底同款）：《法名》第X条 */
@@ -749,7 +769,7 @@ public class ChatService {
                     .toList();
             return OBJECT_MAPPER.writeValueAsString(list);
         } catch (Exception e) {
-            log.warn("引用 JSON 序列化失败，推送空数组: {}", e.getMessage());
+            log.warn("引用 JSON 序列化失败，推送空数组: {}", e.getClass().getSimpleName());
             return "[]";
         }
     }

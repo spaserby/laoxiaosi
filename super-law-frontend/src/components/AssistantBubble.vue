@@ -4,7 +4,7 @@
  * 数据逻辑与 Markdown 渲染、结构化引用优先、正则降级、ThinkingPanel
  */
 import { computed } from 'vue'
-import { marked } from 'marked'
+import { renderReplyMarkdown } from '../utils/reply-markdown'
 import { Scale, ShieldCheck } from 'lucide-vue-next'
 import CitationCard from './CitationCard.vue'
 import ThinkingPanel from './ThinkingPanel.vue'
@@ -27,16 +27,14 @@ async function showSource(source) {
   }
 }
 
-marked.setOptions({ breaks: true })
 
 /**
  * 模型偶发把标题标记写在句尾（如 "…条文依据。## 一、结论先行"），CommonMark 只在行首识别 #，
  * 于是字面量 "##" 漏进正文。仅在中文字句结束标点后紧跟 # 标记时补一个换行——
  * 合法 Markdown 的标题必在行首，此改写无歧义。
  */
-const normalizeHeadings = (md) => md.replace(/([。！？；”"…])(#{1,4})(?=\s*\S)/g, '$1\n$2')
 
-const html = computed(() => marked.parse(normalizeHeadings(props.message.content || '')))
+const html = computed(() => renderReplyMarkdown(props.message.content))
 
 /** 结构化引用（citation 事件）优先；正则解析降级兜底 */
 const citations = computed(() => {
@@ -71,7 +69,7 @@ const topScore = computed(() => {
     <!-- mono 标签行：状态 + 检索元数据 -->
     <div class="ai-head">
       <Scale :size="13" />
-      {{ message.streaming ? '劳小司 · 思考中' : '劳小司 · 依据已核验' }}
+      {{ message.streaming ? '劳小司 · 思考中' : '劳小司 · AI 答复' }}
       <span v-if="citations.length" class="ai-meta">
         <span>命中 {{ citations.length }} 条</span>
         <span v-if="topScore">相关度 {{ topScore.toFixed(2) }}</span>
@@ -87,6 +85,7 @@ const topScore = computed(() => {
     </div>
     <div v-else class="ai-body">
       <div class="md" v-html="html"></div>
+      <p v-if="message.evidenceAvailable === false && message.role === 'assistant'" class="a-note">此历史消息未保存结构化证据；正文中的引用仍需核对原文。</p>
       <p v-if="message.status && !['COMPLETE', 'RUNNING'].includes(message.status)" class="a-note">本轮生成未完成，以上为已保存的部分回复。</p>
       <span v-if="message.streaming" class="cursor"></span>
       <div v-if="message.attachmentContext" class="attachment-evidence">

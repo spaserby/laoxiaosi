@@ -6,7 +6,7 @@ import java.util.List;
 /** 原文归档。id 是分页与摘要游标，禁止因上下文窗口大小删除消息。 */
 @Mapper
 public interface MessageMapper {
-    String COLUMNS = "id, role, content, created_at, turn_id, status";
+    String COLUMNS = "id, role, content, created_at, turn_id, status, evidence";
     @Select("select owner_key from chat_session where session_id=#{sessionId} for update")
     String lockSession(String sessionId);
 
@@ -16,6 +16,10 @@ public interface MessageMapper {
     @Insert("insert into chat_message(session_id,role,content,turn_id,status) values(#{sessionId},#{role},#{content},#{turnId},#{status})")
     int insertTurn(@Param("sessionId") String sessionId, @Param("role") String role, @Param("content") String content,
                    @Param("turnId") String turnId, @Param("status") String status);
+
+    @Insert("insert into chat_message(session_id,role,content,turn_id,status,evidence) values(#{sessionId},'ASSISTANT',#{content},#{turnId},#{status},#{evidence})")
+    int insertAssistant(@Param("sessionId") String sessionId, @Param("content") String content,
+                        @Param("turnId") String turnId, @Param("status") String status, @Param("evidence") String evidence);
 
     @Select("select exists(select 1 from chat_message where session_id=#{sessionId} and status='RUNNING')")
     boolean hasRunning(String sessionId);
@@ -27,7 +31,7 @@ public interface MessageMapper {
     int interruptStale(java.time.LocalDateTime before);
 
     /** SQL 本身包含归属及会话边界，游标不构成授权。多取一行判断 hasMore。 */
-    @Select("<script>select m.id,m.role,m.content,m.created_at,m.turn_id,m.status from chat_message m "
+    @Select("<script>select m.id,m.role,m.content,m.created_at,m.turn_id,m.status,m.evidence from chat_message m "
             + "join chat_session s on s.session_id=m.session_id where m.session_id=#{sessionId} and s.owner_key=#{ownerKey} "
             + "and m.role in ('USER','ASSISTANT') <if test='before != null'>and m.id &lt; #{before}</if> "
             + "order by m.id desc limit #{limit}</script>")

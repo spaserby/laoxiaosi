@@ -100,13 +100,12 @@ public class PlannerAgent implements Agent {
                     .call()
                     .entity(RewriteResult.class);
             if (result != null && result.rewrittenQuery() != null && !result.rewrittenQuery().isBlank()) {
-                log.info("Planner 改写命中: original={}, rewritten={}, category={}",
-                        question, result.rewrittenQuery(), result.category());
+                log.info("Planner 改写命中");
             }
             return result;
         } catch (Exception e) {
             // 降级信条：改写失败不阻断，回落原问题
-            log.warn("Planner 改写失败，降级为原问题: error={}", e.getMessage());
+            log.warn("Planner 改写失败，降级为原问题: error={}", e.getClass().getSimpleName());
             return null;
         }
     }

@@ -34,7 +34,7 @@ public interface UserMapper {
     @Options(useGeneratedKeys = true, keyProperty = "id")
     int insert(UserEntity user);
 
-    @Update("update app_user set password_hash = #{passwordHash} where id = #{id}")
+    @Update("update app_user set password_hash = #{passwordHash}, auth_version = auth_version + 1 where id = #{id}")
     int updatePassword(@Param("id") Long id, @Param("passwordHash") String passwordHash);
 
     @Update("update app_user set role = #{role} where id = #{id}")

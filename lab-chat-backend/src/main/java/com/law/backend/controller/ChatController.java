@@ -164,7 +164,7 @@ public class ChatController {
                 String role = authService.me(userId).role();
                 return new QuotaService.QuotaCtx(QuotaService.tierOf(role), "u:" + userId);
             } catch (Exception e) {
-                log.warn("配额角色反查失败，按游客计: userId={}, error={}", userId, e.getMessage());
+                log.warn("配额角色反查失败，按游客计: userId={}, error={}", userId, e.getClass().getSimpleName());
             }
         }
         String ip = com.law.backend.util.ClientIp.of(exchange);

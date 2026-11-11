@@ -34,7 +34,7 @@ public class GeneralLegalTools {
         ToolBasis.register(toolContext, "《中华人民共和国民法典》", "第一百八十八条");
         try {
             String result = calculatorService.limitation(eventDate).text();
-            log.info("Tool Calling: calculateLimitation, eventDate={}, result={}", eventDate, result);
+            log.info("工具事件: component=GeneralLegalTools");
             return result;
         } catch (IllegalArgumentException e) {
             // 日期格式错误直接回给 LLM，让它修正参数重试（Function Calling 的参数自愈）
@@ -48,7 +48,7 @@ public class GeneralLegalTools {
             ToolContext toolContext) {
         ToolBasis.register(toolContext, "《诉讼费用交纳办法》", "第十三条");
         String result = calculatorService.courtFee(claimAmount).text();
-        log.info("Tool Calling: calculateLitigationFee, claimAmount={}, result={}", claimAmount, result);
+        log.info("工具事件: component=GeneralLegalTools");
         return result;
     }
 
@@ -73,7 +73,7 @@ public class GeneralLegalTools {
             sb.append("版本：").append(a.getVersionInfo()).append('\n');
         }
         sb.append("条文内容：").append(a.getContent());
-        log.info("Tool Calling: getArticle, law={}, no={}", name, no);
+        log.info("工具事件: component=GeneralLegalTools");
         return sb.toString();
     }
 }

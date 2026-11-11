@@ -1,4 +1,5 @@
 import { defineStore } from 'pinia'
+import { markRaw } from 'vue'
 import { listSessions, getSessionMessages, deleteSession, stopChat, listAttachments } from '../api/session'
 import { SseClient } from '../utils/sse'
 import { sessionHeaders } from '../utils/guest'
@@ -18,6 +19,7 @@ import { useUserStore } from './user'
 export const useChatStore = defineStore('chat', {
   state: () => ({
     sessions: [],            // [{sessionId, title, createdAt, updatedAt}]
+    identityEpoch: 0,
     currentSessionId: null,  // null = 欢迎态（首次发送时生成 id）
     messages: {},            // sessionId -> [{role, content, streaming?}]
     historyPages: {},        // sessionId -> {loaded, loading, hasMore, nextCursor, stale, error}
@@ -41,26 +43,39 @@ export const useChatStore = defineStore('chat', {
   },
 
   actions: {
+    resetIdentity() {
+      const epoch = this.identityEpoch + 1
+      this._drain?.discard()
+      this.es?.close()
+      for (const files of Object.values(this.attachmentsBySession))
+        for (const file of files) if (file.url) URL.revokeObjectURL(file.url)
+      this.$reset()
+      this._drain = null
+      this.identityEpoch = epoch
+    },
     ensureSession() {
       if (!this.currentSessionId) this.currentSessionId = this.createSessionId('新对话')
       return this.currentSessionId
     },
     async refreshAttachments(sessionId = this.currentSessionId) {
       if (!sessionId) return
+      const epoch = this.identityEpoch
       try {
         const files = await listAttachments(sessionId)
+        if (epoch !== this.identityEpoch) return
         const previous = this.attachmentsBySession[sessionId] || []
         this.attachmentsBySession[sessionId] = files.map(file => ({ ...file, url: previous.find(p => p.fileId === file.fileId)?.url || '' }))
         this.attachmentErrors[sessionId] = false
-      } catch (error) { this.attachmentErrors[sessionId] = true; throw error }
+      } catch (error) { if (epoch === this.identityEpoch) this.attachmentErrors[sessionId] = true; throw error }
     },
     /** 拉取会话列表（侧栏） */
     async loadSessions() {
+      const epoch = this.identityEpoch
       try {
-        this.sessions = await listSessions()
+        const sessions = await listSessions()
+        if (epoch === this.identityEpoch) this.sessions = sessions
       } catch (e) {
-        console.warn('会话列表加载失败', e)
-        this.sessions = []
+        if (epoch === this.identityEpoch) this.sessions = []
       }
     },
 
@@ -73,15 +88,18 @@ export const useChatStore = defineStore('chat', {
 
     /** 切换会话：懒加载历史消息 */
     async switchSession(sessionId) {
+      const epoch = this.identityEpoch
       if (this.isStreaming) this.stop()
       this.currentSessionId = sessionId
       this.blankMode = false
       if (!this.historyPages[sessionId]?.loaded || this.historyPages[sessionId]?.stale)
         await this.loadHistory(sessionId)
-      await this.refreshAttachments(sessionId).catch(() => {})
+      if (epoch === this.identityEpoch && this.currentSessionId === sessionId)
+        await this.refreshAttachments(sessionId).catch(() => {})
     },
 
     async loadHistory(sessionId, older = false) {
+      const epoch = this.identityEpoch
       const previous = this.historyPages[sessionId] || {}
       if (previous.loading || (older && !previous.hasMore)) return
       this.historyPages[sessionId] = { ...previous, loading: true, loadingOlder: older, error: '' }
@@ -89,7 +107,7 @@ export const useChatStore = defineStore('chat', {
       try {
         const page = await getSessionMessages(sessionId, older ? previous.nextCursor : undefined)
         // 删除期间迟到的响应不能恢复已删除会话。
-        if (this.historyPages[sessionId] !== pageState) return
+        if (epoch !== this.identityEpoch || this.historyPages[sessionId] !== pageState) return
         const rows = (page.data || []).filter(m => m.role === 'user' || m.role === 'assistant')
         const merged = older ? [...rows, ...(this.messages[sessionId] || [])] : rows
         const seen = new Set()
@@ -115,7 +133,9 @@ export const useChatStore = defineStore('chat', {
 
     /** 删除会话 */
     async removeSession(sessionId) {
+      const epoch = this.identityEpoch
       await deleteSession(sessionId)
+      if (epoch !== this.identityEpoch) return
       delete this.messages[sessionId]
       delete this.historyPages[sessionId]
       delete this.attachmentsBySession[sessionId]
@@ -156,11 +176,15 @@ export const useChatStore = defineStore('chat', {
 
       // 凭证（token / 匿名凭据）走请求头，问题走 POST 请求体——URL 里不再出现任何敏感参数。
       // 原先 token 与 userMessage 都拼在 URL 上，而 URL 会进 nginx/代理访问日志（P0 安全整改）。
-      const es = new SseClient('/chat/stream', {
+      const es = markRaw(new SseClient('/chat/stream', {
         headers: sessionHeaders(),
         body: { sessionId: sid, userMessage: text, fileIds: (files || []).map((f) => f.fileId), mode }
-      })
+      }))
       this.es = es
+      const epoch = this.identityEpoch
+      const listen = (type, handler) => es.addEventListener(type, event => {
+        if (epoch === this.identityEpoch && this.es === es) handler(event)
+      })
 
       // SSE data 已 JSON 编码（防前导空格被 SSE 协议剥离）；解析失败降级用原文
       const parseSse = (data) => { try { return JSON.parse(data) } catch { return data } }
@@ -172,6 +196,7 @@ export const useChatStore = defineStore('chat', {
       let pendingRea = ''
       let drainTimer = null
       const drainTick = () => {
+        if (epoch !== this.identityEpoch || this.es !== es) { discardPending(); return }
         if (pendingTok.length) {
           const n = Math.max(1, Math.ceil(pendingTok.length / 6))
           assistant.content += pendingTok.slice(0, n)
@@ -200,26 +225,26 @@ export const useChatStore = defineStore('chat', {
       }
       this._drain = { flush: flushPending, discard: discardPending }
 
-      es.addEventListener('token', (e) => {
+      listen('token', (e) => {
         if (!assistant.firstTokenTs) assistant.firstTokenTs = Date.now()
         pendingTok += parseSse(e.data)
         ensureDrain()
       })
       // 模型真实推理内容流（reasoning_content 透传，DeepSeek 式思考面板）
-      es.addEventListener('reasoning', (e) => {
+      listen('reasoning', (e) => {
         pendingRea += parseSse(e.data)
         ensureDrain()
       })
       // 思考过程阶段事件：首 token 前的黑盒等待变为可见进度（路由/改写/检索/生成）
-      es.addEventListener('stage', (e) => { assistant.stage = e.data })
-      es.addEventListener('attachment', (e) => {
+      listen('stage', (e) => { assistant.stage = e.data })
+      listen('attachment', (e) => {
         try {
           const { sources, warnings, selectedSections, totalSections, fullCoverage } = JSON.parse(e.data)
           assistant.attachmentContext = { sources, warnings, selectedSections, totalSections, fullCoverage }
         } catch { /* 无效事件不影响正文 */ }
       })
       // 结构化引用事件——引用卡展示"检索命中了什么"（可信），正则解析降级为兜底
-      es.addEventListener('citation', (e) => {
+      listen('citation', (e) => {
         try {
           const list = JSON.parse(e.data)
           // 按法条去重（稠密+稀疏双路可能同条双命中）：重复 lawName+articleNo 会使
@@ -234,7 +259,7 @@ export const useChatStore = defineStore('chat', {
         } catch { /* 忽略坏 JSON */ }
       })
       // 配额拒绝事件——移除占位 assistant 消息，交 ChatView 弹引导（登录/重置倒计时）
-      es.addEventListener('quota', (e) => {
+      listen('quota', (e) => {
         try {
           this.quotaDeny = JSON.parse(e.data)
         } catch {
@@ -247,12 +272,14 @@ export const useChatStore = defineStore('chat', {
         this.finish(sid)
       })
       // 审校不通过重试——清空当前 assistant 消息（含引用），等待第二轮重新流式填充
-      es.addEventListener('retry', () => {
+      listen('retry', () => {
         discardPending()
         assistant.content = ''; assistant.citations = []; assistant.stage = ''
+        delete assistant.attachmentContext
         assistant.reasoning = ''; assistant.firstTokenTs = 0; assistant.startTs = Date.now()
       })
-      es.addEventListener('done', () => {
+      listen('done', () => {
+        assistant.status = 'COMPLETE'
         flushPending()   // 收尾：剩余缓冲立即落屏，保证终态完整
         // 思考时长 = 发送 → 首 token（含路由/改写/检索/模型思考），DeepSeek 式"已思考 N 秒"
         assistant.thinkSeconds = assistant.firstTokenTs
@@ -260,7 +287,9 @@ export const useChatStore = defineStore('chat', {
           : ((Date.now() - assistant.startTs) / 1000).toFixed(1)
         this.finish(sid)
       })
-      es.addEventListener('error', (e) => {
+      listen('error', (e) => {
+        flushPending()
+        assistant.status = 'FAILED'
         // ★ 载荷形态统一从 e.data 取（SseClient._emit 把载荷挂在 data 上，与 EventSource 语义一致）：
         //   传输层失败 → data = {status?, message?}（非 2xx 响应/流未 done 中断）
         //   后端命名 error 事件 → data = 字符串
@@ -298,11 +327,17 @@ export const useChatStore = defineStore('chat', {
 
     /** 流收尾：标记消息完成、状态回 idle、刷新会话列表（标题/排序可能变化） */
     finish(sid, stopped = false) {
+      if (this._drain) {
+        if (stopped) this._drain.discard()
+        else this._drain.flush()
+        this._drain = null
+      }
       if (this.es) { this.es.close(); this.es = null }
       const msgs = this.messages[sid] || []
       const last = msgs[msgs.length - 1]
       if (last && last.role === 'assistant') {
         last.streaming = false
+        if (stopped) last.status = 'STOPPED'
         if (stopped && !last.content) last.content = '（已停止生成）'
       }
       this.phase = 'idle'

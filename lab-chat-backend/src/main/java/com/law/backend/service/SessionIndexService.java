@@ -40,7 +40,7 @@ public class SessionIndexService {
             String title = titleOf(firstMessage);
             sessionMapper.upsert(sessionId, title, now, now, ownerKey);
         } catch (Exception e) {
-            log.warn("会话索引写入失败（不影响对话）: sessionId={}, error={}", sessionId, e.getMessage());
+            log.warn("会话索引写入失败（不影响对话）: sessionId={}, error={}", sessionId, e.getClass().getSimpleName());
         }
     }
 
@@ -59,7 +59,7 @@ public class SessionIndexService {
         try {
             return sessionMapper.findAllByOwner(ownerKey);
         } catch (Exception e) {
-            log.warn("会话索引读取失败，返回空列表: {}", e.getMessage());
+            log.warn("会话索引读取失败，返回空列表: {}", e.getClass().getSimpleName());
             return List.of();
         }
     }
@@ -71,7 +71,7 @@ public class SessionIndexService {
         try {
             sessionMapper.deleteOwned(sessionId, ownerKey);
         } catch (Exception e) {
-            log.warn("会话索引删除失败: sessionId={}, error={}", sessionId, e.getMessage());
+            log.warn("会话索引删除失败: sessionId={}, error={}", sessionId, e.getClass().getSimpleName());
         }
     }
 }

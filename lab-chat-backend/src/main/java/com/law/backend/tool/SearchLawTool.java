@@ -59,7 +59,7 @@ public class SearchLawTool {
         // 检索预算：由 ChatService 每次对话注入（路线差异化，与 webSearch 共享同一池），超限即"断供"
         ToolBudget budget = (ToolBudget) toolContext.getContext().get(ToolBudget.KEY);
         if (budget != null && !budget.tryAcquire()) {
-            log.info("检索预算已耗尽: query={}, 已用={}/{}", query, budget.usedCount(), budget.maxCalls());
+            log.info("工具事件: component=SearchLawTool");
             // 连续拒绝 ≥3 次升级强制收敛指令，终结检索成瘾空转
             return budget.denialCount() >= ToolBudget.HARD_DENY_AFTER
                     ? "检索次数已达本轮上限且连续多次调用被拒。【强制】立即停止一切工具调用，"
@@ -77,7 +77,7 @@ public class SearchLawTool {
             // 检索降级（向量库不可用）或无结果/未过阈值：提示模型换关键词重试或基于通用知识回答
             return "未检索到相关条文。可尝试更换更简洁的法律术语重试一次；若仍无结果，请基于通用知识回答并说明未找到直接依据。";
         }
-        log.info("searchLaw 工具调用: query={}, 命中={} 条", query, cites.size());
+        log.info("工具事件: component=SearchLawTool");
         return cites.stream().map(LawCitation::text).reduce((a, b) -> a + "\n\n" + b).orElse("");
     }
 

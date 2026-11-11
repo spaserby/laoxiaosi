@@ -93,7 +93,7 @@ public class WebSearchTool {
         // 共享工具预算：与 searchLaw 从同一预算扣减，防止先查本地再联网双重失控
         ToolBudget budget = (ToolBudget) toolContext.getContext().get(ToolBudget.KEY);
         if (budget != null && !budget.tryAcquire()) {
-            log.info("工具预算已耗尽: query={}, 已用={}/{}", query, budget.usedCount(), budget.maxCalls());
+            log.info("工具事件: component=WebSearchTool");
             // 连续拒绝 ≥3 次升级强制收敛指令
             return budget.denialCount() >= ToolBudget.HARD_DENY_AFTER
                     ? "检索次数已达本轮上限且连续多次调用被拒。【强制】立即停止一切工具调用，"
@@ -103,12 +103,11 @@ public class WebSearchTool {
         }
         try {
             String answer = callOnlineModel(query);
-            log.info("webSearch 工具调用: query={}, 子模型={}, 返回={} 字",
-                    query, properties.getLlm().getModel(), answer.length());
+            log.info("工具事件: component=WebSearchTool");
             return answer;
         } catch (Exception e) {
             // 联网搜索失败不阻断回答：降级为本地知识（与 searchLaw 降级策略对齐）
-            log.warn("webSearch 调用失败，降级为本地知识: query={}, error={}", query, e.getMessage());
+            log.warn("工具事件: component=WebSearchTool");
             return "联网搜索暂时不可用，请基于本地知识库与通用知识回答，并提醒用户答案仅供参考。";
         }
     }

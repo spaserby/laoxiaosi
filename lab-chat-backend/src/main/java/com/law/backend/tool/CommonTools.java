@@ -42,7 +42,7 @@ public class CommonTools {
             @ToolParam(description = "时间格式，如 yyyy-MM-dd HH:mm:ss，不传则用默认格式", required = false) String format) {
         String pattern = format == null || format.isBlank() ? "yyyy-MM-dd HH:mm:ss" : format;
         String result = LocalDateTime.now().format(DateTimeFormatter.ofPattern(pattern));
-        log.info("Tool Calling: getCurrentTime, format={}, result={}", format, result);
+        log.info("工具事件: component=CommonTools");
         return result;
     }
 
@@ -59,7 +59,7 @@ public class CommonTools {
     public String calculate(
             @ToolParam(description = "数学表达式，如 12*5+8，只支持数字和加减乘除括号") String expression) {
         String result = String.valueOf(new ExprParser(expression).parse());
-        log.info("Tool Calling: calculate, expression={}, result={}", expression, result);
+        log.info("工具事件: component=CommonTools");
         return result;
     }
 

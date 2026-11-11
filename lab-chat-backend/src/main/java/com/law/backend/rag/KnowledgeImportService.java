@@ -261,7 +261,7 @@ public class KnowledgeImportService {
             }
         } catch (Exception e) {
             // 降级：导入失败不阻断启动，检索侧会降级为空/用旧索引；已 checkpoint 部分不丢
-            log.warn("知识库同步失败（PG/向量库可能不可用），RAG 将降级: {}", e.getMessage());
+            log.warn("知识库同步失败（PG/向量库可能不可用），RAG 将降级: {}", e.getClass().getSimpleName());
             return e.getMessage();
         }
         return null;

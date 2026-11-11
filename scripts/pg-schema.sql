@@ -59,6 +59,7 @@ CREATE TABLE IF NOT EXISTS app_user (
   id            BIGSERIAL PRIMARY KEY,
   username      VARCHAR(64) UNIQUE,          -- 手机注册用户可空（PG 唯一约束允许多 NULL）
   password_hash VARCHAR(100) NOT NULL,
+  auth_version  BIGINT NOT NULL DEFAULT 0,
   phone         VARCHAR(20) UNIQUE,
   role          VARCHAR(20) NOT NULL DEFAULT 'USER',
   status        SMALLINT NOT NULL DEFAULT 0,
@@ -90,6 +91,7 @@ CREATE TABLE IF NOT EXISTS chat_message (
   content    TEXT,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   turn_id    VARCHAR(36),
+  evidence   TEXT NOT NULL DEFAULT '{}',
   status     VARCHAR(20) NOT NULL DEFAULT 'COMPLETE'
 );
 CREATE INDEX IF NOT EXISTS idx_msg_session ON chat_message(session_id, id);

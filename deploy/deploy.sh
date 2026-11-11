@@ -57,7 +57,7 @@ if [ "$DO_DB" = "1" ]; then
       --env-file deploy/.env --env-file "$TMPENV" postgres:17-alpine \
       sh -c 'psql -h "$PG_HOST" -p "${PG_PORT:-5432}" -U "$PG_USER" -d "$PG_DB" -v ON_ERROR_STOP=1 -q -f -'
   }
-  for f in scripts/migration-01-doc-type-and-dedupe.sql scripts/migration-02-session-owner.sql scripts/migration-03-private-attachments.sql scripts/migration-04-conversation-history.sql db/init.sql; do
+  for f in scripts/migration-01-doc-type-and-dedupe.sql scripts/migration-02-session-owner.sql scripts/migration-03-private-attachments.sql scripts/migration-04-conversation-history.sql scripts/migration-05-security-and-evidence.sql db/init.sql; do
     printf '  %-48s' "$f"
     run_sql < "$f" > /dev/null
     echo "OK"

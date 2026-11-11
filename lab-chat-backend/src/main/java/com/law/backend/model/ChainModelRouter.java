@@ -63,7 +63,7 @@ public class ChainModelRouter implements ModelRouter {
         if (routeName == null) {
             routeName = DEFAULT_ROUTE;
         }
-        log.info("模型路由: layer={}, route={}, message={}", decidedBy, routeName, userMessage);
+        log.info("模型路由: layer={}, route={}, messageLength={}", decidedBy, routeName, userMessage == null ? 0 : userMessage.length());
         return build(routeName);
     }
 

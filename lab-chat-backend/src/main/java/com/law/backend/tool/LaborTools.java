@@ -42,8 +42,7 @@ public class LaborTools {
             ToolContext toolContext) {
         ToolBasis.register(toolContext, "《中华人民共和国劳动合同法》", "第四十七条");
         String result = calculatorService.severance(workYears, monthlySalary, localAvgSalary).text();
-        log.info("Tool Calling: calculateSeverance, workYears={}, monthlySalary={}, localAvgSalary={}, result={}",
-                workYears, monthlySalary, localAvgSalary, result);
+        log.info("工具事件: component=LaborTools");
         return result;
     }
 
@@ -55,8 +54,7 @@ public class LaborTools {
             ToolContext toolContext) {
         ToolBasis.register(toolContext, "《中华人民共和国劳动合同法》", "第八十七条");
         String result = calculatorService.wrongfulTerminationIndemnity(workYears, monthlySalary, localAvgSalary).text();
-        log.info("Tool Calling: calculateWrongfulTerminationIndemnity, workYears={}, monthlySalary={}, result={}",
-                workYears, monthlySalary, result);
+        log.info("工具事件: component=LaborTools");
         return result;
     }
 
@@ -66,7 +64,7 @@ public class LaborTools {
             ToolContext toolContext) {
         ToolBasis.register(toolContext, "《中华人民共和国劳动合同法》", "第四十条");
         String result = calculatorService.noticePay(monthlySalary).text();
-        log.info("Tool Calling: calculateNoticePay, monthlySalary={}, result={}", monthlySalary, result);
+        log.info("工具事件: component=LaborTools");
         return result;
     }
 
@@ -79,8 +77,7 @@ public class LaborTools {
             ToolContext toolContext) {
         ToolBasis.register(toolContext, "《中华人民共和国劳动法》", "第四十四条");
         String result = calculatorService.overtime(baseSalary, weekdayHours, weekendHours, holidayHours).text();
-        log.info("Tool Calling: calculateOvertimePay, baseSalary={}, weekday={}, weekend={}, holiday={}, result={}",
-                baseSalary, weekdayHours, weekendHours, holidayHours, result);
+        log.info("工具事件: component=LaborTools");
         return result;
     }
 
@@ -93,7 +90,7 @@ public class LaborTools {
         ToolBasis.register(toolContext, "《中华人民共和国劳动合同法》", "第八十二条");
         try {
             String result = calculatorService.doubleWage(startDate, signDate, monthlySalary).text();
-            log.info("Tool Calling: calculateDoubleWage, start={}, sign={}, result={}", startDate, signDate, result);
+            log.info("工具事件: component=LaborTools");
             return result;
         } catch (IllegalArgumentException e) {
             // 日期格式错误直接回给 LLM，让它修正参数重试（Function Calling 的参数自愈）
@@ -110,8 +107,7 @@ public class LaborTools {
             ToolContext toolContext) {
         ToolBasis.register(toolContext, "《中华人民共和国劳动合同法》", "第十九条");
         String result = calculatorService.probationCheck(contractMonths, probationMonths, probationSalary, contractSalary).text();
-        log.info("Tool Calling: calculateProbation, contractMonths={}, probationMonths={}, result={}",
-                contractMonths, probationMonths, result);
+        log.info("工具事件: component=LaborTools");
         return result;
     }
 
@@ -123,7 +119,7 @@ public class LaborTools {
             ToolContext toolContext) {
         ToolBasis.register(toolContext, "《职工带薪年休假条例》", "第三条");
         String result = calculatorService.annualLeaveCompensation(totalWorkYears, takenDays, monthlySalary).text();
-        log.info("Tool Calling: calculateAnnualLeave, years={}, taken={}, result={}", totalWorkYears, takenDays, result);
+        log.info("工具事件: component=LaborTools");
         return result;
     }
 
@@ -133,7 +129,7 @@ public class LaborTools {
             ToolContext toolContext) {
         ToolBasis.register(toolContext, "《中华人民共和国社会保险法》", "第四十六条");
         String result = calculatorService.unemploymentMonths(contributionYears).text();
-        log.info("Tool Calling: calculateUnemployment, years={}, result={}", contributionYears, result);
+        log.info("工具事件: component=LaborTools");
         return result;
     }
 
@@ -144,7 +140,7 @@ public class LaborTools {
             ToolContext toolContext) {
         ToolBasis.register(toolContext, "《工伤保险条例》", "第三十七条");
         String result = calculatorService.workInjuryGrant(disabilityGrade, monthlySalary).text();
-        log.info("Tool Calling: calculateWorkInjury, grade={}, salary={}, result={}", disabilityGrade, monthlySalary, result);
+        log.info("工具事件: component=LaborTools");
         return result;
     }
 
@@ -156,8 +152,7 @@ public class LaborTools {
             ToolContext toolContext) {
         ToolBasis.register(toolContext, "《中华人民共和国社会保险法》", "第六十三条");
         String result = calculatorService.socialInsuranceBackpay(actualSalary, contributionBase, months).text();
-        log.info("Tool Calling: calculateSocialInsuranceBackpay, actual={}, base={}, months={}, result={}",
-                actualSalary, contributionBase, months, result);
+        log.info("工具事件: component=LaborTools");
         return result;
     }
 
@@ -170,8 +165,7 @@ public class LaborTools {
             ToolContext toolContext) {
         ToolBasis.register(toolContext, "《住房公积金管理条例》", "第二十条");
         String result = calculatorService.fundBackpay(actualSalary, contributionBase, months, fundRate).text();
-        log.info("Tool Calling: calculateFundBackpay, actual={}, base={}, months={}, rate={}, result={}",
-                actualSalary, contributionBase, months, fundRate, result);
+        log.info("工具事件: component=LaborTools");
         return result;
     }
 
@@ -184,8 +178,7 @@ public class LaborTools {
         ToolBasis.register(toolContext, "《中华人民共和国劳动争议调解仲裁法》", "第二十七条");
         try {
             String result = calculatorService.arbitrationLimitation(knowDate, wageArrears, endDate).text();
-            log.info("Tool Calling: calculateArbitrationLimitation, knowDate={}, wageArrears={}, result={}",
-                    knowDate, wageArrears, result);
+            log.info("工具事件: component=LaborTools");
             return result;
         } catch (IllegalArgumentException e) {
             return e.getMessage();
@@ -203,7 +196,7 @@ public class LaborTools {
         }
         String result = String.format("%s：月最低工资 %.0f 元；上年度职工月平均工资 %.0f 元（%s）",
                 city.trim(), s.getMinWage(), s.getAvgWage(), s.getNote());
-        log.info("Tool Calling: getCityLaborStandard, city={}, result={}", city, result);
+        log.info("工具事件: component=LaborTools");
         return result;
     }
 }

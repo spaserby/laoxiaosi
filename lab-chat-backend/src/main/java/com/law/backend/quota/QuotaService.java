@@ -132,7 +132,7 @@ public class QuotaService {
                 counter.set(0);
             }
         } catch (Exception e) {
-            log.warn("配额回滚失败（忽略）: {}", e.getMessage());
+            log.warn("配额回滚失败（忽略）: {}", e.getClass().getSimpleName());
         }
     }
 
@@ -144,7 +144,7 @@ public class QuotaService {
             try {
                 used = (int) Math.max(0, counter(ctx, tier).get());
             } catch (Exception e) {
-                log.warn("配额读取失败（按 0 计）: {}", e.getMessage());
+                log.warn("配额读取失败（按 0 计）: {}", e.getClass().getSimpleName());
             }
         }
         int remaining = tier.getLimit() < 0 ? -1 : Math.max(0, tier.getLimit() - used);

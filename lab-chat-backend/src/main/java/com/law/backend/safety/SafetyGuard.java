@@ -36,7 +36,7 @@ public class SafetyGuard {
     /** ① 拒答拦截：命中返回规范话术（ChatService 直接短路，不调用模型）；未命中返回 null */
     public String checkRefusal(String userMessage) {
         if (properties.isEnabled() && hitAny(userMessage, properties.getRefusalKeywords())) {
-            log.info("安全层拒答拦截: message={}", truncate(userMessage));
+            log.info("安全层拒答拦截: messageLength={}", userMessage == null ? 0 : userMessage.length());
             return properties.getRefusalReply();
         }
         return null;
@@ -45,7 +45,7 @@ public class SafetyGuard {
     /** ② 紧急置顶：命中返回警告文案（拼在回答最前），未命中返回 null */
     public String urgentWarning(String userMessage) {
         if (properties.isEnabled() && hitAny(userMessage, properties.getUrgentKeywords())) {
-            log.info("安全层紧急置顶: message={}", truncate(userMessage));
+            log.info("安全层紧急置顶: messageLength={}", userMessage == null ? 0 : userMessage.length());
             return properties.getUrgentWarning();
         }
         return null;

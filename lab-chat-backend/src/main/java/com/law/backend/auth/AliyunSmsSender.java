@@ -75,14 +75,13 @@ public class AliyunSmsSender implements SmsSender {
             SendSmsVerifyCodeResponse response = client().sendSmsVerifyCode(request);
             String respCode = response.getBody() == null ? "" : response.getBody().getCode();
             if (!"OK".equals(respCode)) {
-                String msg = response.getBody() == null ? "无响应体" : response.getBody().getMessage();
-                throw new IllegalStateException("阿里云短信发送失败: " + respCode + " " + msg);
+                throw new IllegalStateException("短信通道暂不可用，请稍后重试");
             }
-            log.info("【阿里云短信认证】验证码已发送至 {}", phone);
+            log.info("【阿里云短信认证】验证码已发送至 {}", com.law.backend.util.PrivacyLog.phone(phone));
         } catch (IllegalStateException e) {
             throw e;
         } catch (Exception e) {
-            throw new IllegalStateException("短信发送失败: " + e.getMessage(), e);
+            throw new IllegalStateException("短信通道暂不可用，请稍后重试");
         }
     }
 
@@ -98,12 +97,11 @@ public class AliyunSmsSender implements SmsSender {
             boolean ok = body != null && "OK".equals(body.getCode())
                     && (body.getModel() == null || "PASS".equalsIgnoreCase(body.getModel().getVerifyResult()));
             if (!ok && body != null) {
-                log.warn("【阿里云短信认证】核验未通过: phone={}, resp={}, verifyResult={}", phone,
-                        body.getMessage(), body.getModel() == null ? "-" : body.getModel().getVerifyResult());
+                log.warn("【阿里云短信认证】核验未通过: phone={}", com.law.backend.util.PrivacyLog.phone(phone));
             }
             return ok;
         } catch (Exception e) {
-            log.warn("【阿里云短信认证】核验调用失败（按不通过处理）: {}", e.getMessage());
+            log.warn("【阿里云短信认证】核验调用失败（按不通过处理）: {}", e.getClass().getSimpleName());
             return false;
         }
     }

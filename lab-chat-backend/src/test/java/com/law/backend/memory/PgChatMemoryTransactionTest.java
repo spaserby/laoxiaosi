@@ -84,6 +84,18 @@ class PgChatMemoryTransactionTest {
         assertEquals(0, summaries.state(SESSION).coveredUntilMessageId());
         verifyNoInteractions(model);
     }
+    @Test void persistedEvidenceSurvivesFreshHistoryReadWithoutReretrieval() {
+        var turn=turns.begin(SESSION,OWNER.key(),"合成证据问题");
+        String evidence="{\"version\":1,\"citations\":[{\"lawName\":\"合成规则\",\"articleNo\":\"第1条\",\"text\":\"合成证据原文\"}],"
+                + "\"attachmentContext\":{\"sources\":[{\"fileId\":\"synthetic-file\",\"parentId\":2}],\"warnings\":[],\"selectedSections\":1,\"totalSections\":3,\"fullCoverage\":false}}";
+        turns.finish(turn,"合成答案","COMPLETE",evidence);
+        var restored=history.page(SESSION,OWNER,null,50).data().get(1);
+        assertEquals(true,restored.get("evidenceAvailable"));
+        assertTrue(restored.get("citations").toString().contains("合成证据原文"));
+        assertTrue(restored.get("attachmentContext").toString().contains("synthetic-file"));
+        rounds(1);
+        assertEquals(false,history.page(SESSION,OWNER,null,50).data().get(3).get("evidenceAvailable"));
+    }
     @Test void publicHistoryControllerReturnsOriginalsWithoutSummaryAfterFiveRounds() {
         rounds(5); worker.scan();
         var controller = new com.law.backend.controller.SessionController(

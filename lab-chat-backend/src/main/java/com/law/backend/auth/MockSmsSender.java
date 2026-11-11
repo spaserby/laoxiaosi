@@ -5,7 +5,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
 /**
- * Mock 短信通道（默认）：验证码只写日志，不产生真实短信费用
+ * Mock 短信通道（默认）：不投递、不记录验证码；本地调试可显式启用 mock-echo
  * <p>
  * 切换真实通道：{@code legal.ai.auth.sms-provider: aliyun}
  */
@@ -16,6 +16,6 @@ public class MockSmsSender implements SmsSender {
 
     @Override
     public void send(String phone, String code) {
-        log.info("【Mock短信】向 {} 发送验证码（未接真实短信通道）", phone);
+        log.info("模拟短信发送完成");
     }
 }

@@ -27,14 +27,15 @@ import java.util.List;
  *   <li>降级：{@code ?token=<token>} URL 参数——浏览器 EventSource（SSE）
  *       <b>不支持自定义请求头</b>，聊天流接口只能走 URL 传参</li>
  * </ul>
- * 无 token / token 无效一律静默放行为匿名——准入控制不在此处
- * （默认全接口公开；管理端接口用 @PreAuthorize 按角色收紧）。
+ * 无 token 保持匿名；提供了无效、撤销或封禁凭据时返回401。
+ * 每次请求按数据库当前账号状态和角色授权，管理端继续执行角色准入控制。
  */
 @Component
 @RequiredArgsConstructor
 public class JwtAuthFilter implements WebFilter {
 
     private final JwtService jwtService;
+    private final com.law.backend.user.UserMapper users;
 
     @Override
     public Mono<Void> filter(ServerWebExchange exchange, WebFilterChain chain) {
@@ -42,18 +43,35 @@ public class JwtAuthFilter implements WebFilter {
         if (token == null) {
             return chain.filter(exchange);
         }
-        return jwtService.parse(token)
-                .map(claims -> {
-                    Long userId = Long.parseLong(claims.getSubject());
-                    String role = claims.get("role", String.class);
-                    Authentication auth = new UsernamePasswordAuthenticationToken(
-                            userId, null, List.of(new SimpleGrantedAuthority("ROLE_" + role)));
-                    // Reactor Context 写入认证信息：下游 @AuthenticationPrincipal /
-                    // ReactiveSecurityContextHolder 均可读取，跨线程调度不丢失
-                    return chain.filter(exchange)
-                            .contextWrite(ReactiveSecurityContextHolder.withAuthentication(auth));
-                })
-                .orElseGet(() -> chain.filter(exchange));
+        var parsed = jwtService.parse(token);
+        if (parsed.isEmpty()) return unauthorized(exchange);
+        var claims = parsed.get();
+        final long id;
+        final long version;
+        try {
+            id = Long.parseLong(claims.getSubject());
+            if (!(claims.get("av") instanceof Number number)) return unauthorized(exchange);
+            version = number.longValue();
+            if (id <= 0 || version < 0) return unauthorized(exchange);
+        } catch (RuntimeException e) { return unauthorized(exchange); }
+        // 每次鉴权读取当前权限，不接受 JWT 中已经过时的角色；JDBC 不占用 I/O 线程。
+        return Mono.fromCallable(() -> users.findById(id))
+                .subscribeOn(reactor.core.scheduler.Schedulers.boundedElastic())
+                .filter(user -> Integer.valueOf(0).equals(user.getStatus()) && user.getAuthVersion() == version)
+                .filter(user -> java.util.Set.of("USER", "LAWYER", "MEMBER", "ADMIN").contains(java.util.Objects.toString(user.getRole(), "")))
+                .map(user -> (Authentication) new UsernamePasswordAuthenticationToken(
+                        id, null, List.of(new SimpleGrantedAuthority("ROLE_" + user.getRole()))))
+                .flatMap(auth -> chain.filter(exchange).contextWrite(ReactiveSecurityContextHolder.withAuthentication(auth))
+                        .thenReturn(Boolean.TRUE))
+                .switchIfEmpty(Mono.defer(() -> unauthorized(exchange).thenReturn(Boolean.FALSE)))
+                .then();
+    }
+
+    private Mono<Void> unauthorized(ServerWebExchange exchange) {
+        exchange.getResponse().setStatusCode(org.springframework.http.HttpStatus.UNAUTHORIZED);
+        exchange.getResponse().getHeaders().setContentType(org.springframework.http.MediaType.APPLICATION_JSON);
+        byte[] body = "{\"message\":\"登录已失效，请重新登录\"}".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        return exchange.getResponse().writeWith(Mono.just(exchange.getResponse().bufferFactory().wrap(body)));
     }
 
     /** 双通道提取：Authorization 头优先，URL ?token= 兜底（SSE 场景） */

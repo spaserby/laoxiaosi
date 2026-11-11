@@ -65,7 +65,7 @@ public class KnowledgeRetrievalService {
                 sparse = lawArticleMapper.keywordSearch(query, ragProperties.getBm25TopK())
                         .stream().map(this::entityToCitation).toList();
             } catch (Exception e) {
-                log.warn("BM25 检索失败（pg_trgm 索引可能未建），降级为纯稠密路: {}", e.getMessage());
+                log.warn("BM25 检索失败（pg_trgm 索引可能未建），降级为纯稠密路: {}", e.getClass().getSimpleName());
             }
         }
 
@@ -94,7 +94,7 @@ public class KnowledgeRetrievalService {
                     ranked = reranked;
                 }
             } catch (Exception e) {
-                log.warn("rerank 精排失败，降级为融合序取 topK: {}", e.getMessage());
+                log.warn("rerank 精排失败，降级为融合序取 topK: {}", e.getClass().getSimpleName());
             }
         }
 
@@ -117,15 +117,15 @@ public class KnowledgeRetrievalService {
             return toCitations(search(query, filter, ragProperties.getRecallTopK()));
         } catch (Exception e) {
             if (filter != null) {
-                log.warn("RAG 分类过滤检索失败，降级为不过滤: category={}, error={}", filter, e.getMessage());
+                log.warn("RAG 分类过滤检索失败，降级为不过滤: type={}", e.getClass().getSimpleName());
                 try {
                     return toCitations(search(query, null, ragProperties.getRecallTopK()));
                 } catch (Exception retryError) {
-                    log.warn("RAG 检索失败（Redis 向量库可能不可用），降级为纯对话: {}", retryError.getMessage());
+                    log.warn("RAG 检索失败（Redis 向量库可能不可用），降级为纯对话: {}", retryError.getClass().getSimpleName());
                     return List.of();
                 }
             }
-            log.warn("RAG 检索失败（Redis 向量库可能不可用），降级为纯对话: {}", e.getMessage());
+            log.warn("RAG 检索失败（Redis 向量库可能不可用），降级为纯对话: {}", e.getClass().getSimpleName());
             return List.of();
         }
     }
@@ -193,7 +193,7 @@ public class KnowledgeRetrievalService {
             return new LawCitation(a.getId(), a.getLawName(), a.getArticleNo(),
                     c.category(), c.score(), a.toEmbeddingText(), false);
         } catch (Exception e) {
-            log.warn("Small-to-Big 还原失败，降级为 chunk 文本: articleId={}, error={}", c.articleId(), e.getMessage());
+            log.warn("Small-to-Big 还原失败，降级为 chunk 文本: articleId={}, error={}", c.articleId(), e.getClass().getSimpleName());
             return c;
         }
     }

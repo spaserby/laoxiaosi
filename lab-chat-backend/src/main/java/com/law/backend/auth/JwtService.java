@@ -17,8 +17,7 @@ import java.util.Optional;
  * JWT 签发与解析
  * <p>
  * HS256 对称签名；密钥来自配置（生产用环境变量注入）。解析失败（过期/篡改/格式错）
- * 统一返回 Optional.empty()，由调用方按匿名处理——学习项目全接口公开，
- * token 只做"身份识别"不做"准入拦截"。
+ * 统一返回 Optional.empty()，过滤器对明确提供的无效凭据返回401。
  */
 @Slf4j
 @Service
@@ -63,18 +62,23 @@ public class JwtService {
 
     /** 签发 token：subject=userId，claims 带 username/role */
     public String generate(Long userId, String username, String role) {
+        return generate(userId, username, role, 0);
+    }
+
+    public String generate(Long userId, String username, String role, long authVersion) {
         Date now = new Date();
         return Jwts.builder()
                 .subject(String.valueOf(userId))
                 .claim("username", username == null ? "" : username)
                 .claim("role", role)
+                .claim("av", authVersion)
                 .issuedAt(now)
                 .expiration(new Date(now.getTime() + expireMillis))
                 .signWith(key)
                 .compact();
     }
 
-    /** 解析并验签；过期/篡改/非法格式一律返回 empty（调用方按匿名处理） */
+    /** 解析并验签；过期/篡改/非法格式一律返回 empty。 */
     public Optional<Claims> parse(String token) {
         if (token == null || token.isBlank()) {
             return Optional.empty();
@@ -82,7 +86,7 @@ public class JwtService {
         try {
             return Optional.of(Jwts.parser().verifyWith(key).build().parseSignedClaims(token).getPayload());
         } catch (Exception e) {
-            log.debug("JWT 解析失败（按匿名处理）: {}", e.getMessage());
+            log.debug("JWT 解析失败: type={}", e.getClass().getSimpleName());
             return Optional.empty();
         }
     }

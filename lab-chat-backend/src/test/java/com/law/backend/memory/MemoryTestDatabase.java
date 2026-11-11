@@ -35,7 +35,7 @@ class MemoryTestDatabase {
           created_at bigint default 0, updated_at bigint default 0, owner_key varchar(80));
         create table chat_message(id bigserial primary key, session_id varchar(64) not null,
           role varchar(20) not null, content text check(content <> 'reject'),created_at timestamp default current_timestamp,
-          turn_id varchar(36),status varchar(20) not null default 'COMPLETE', unique(session_id,turn_id,role));
+          turn_id varchar(36),status varchar(20) not null default 'COMPLETE',evidence text not null default '{}', unique(session_id,turn_id,role));
         create table chat_summary(session_id varchar(64) primary key,content text not null,
           updated_at timestamp default current_timestamp,covered_until_message_id bigint not null default 0,
           version bigint not null default 0,legacy boolean not null default false,lease_token varchar(36),

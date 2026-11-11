@@ -25,12 +25,16 @@ public class ConversationTurnService {
     }
     @Transactional
     public void finish(Turn turn, String answer, String status) {
+        finish(turn, answer, status, "{}");
+    }
+    @Transactional
+    public void finish(Turn turn, String answer, String status, String evidence) {
         if (turn == null) return;
         if (!Set.of("COMPLETE", "STOPPED", "FAILED", "INTERRUPTED").contains(status))
             throw new IllegalArgumentException("未知的轮次结束状态");
         if (messages.lockSession(turn.sessionId()) == null) return;
         if (messages.finish(turn.sessionId(), turn.turnId(), status) == 0) return;
         if (answer != null && !answer.isBlank())
-            messages.insertTurn(turn.sessionId(), "ASSISTANT", answer, turn.turnId(), status);
+            messages.insertAssistant(turn.sessionId(), answer, turn.turnId(), status, evidence);
     }
 }

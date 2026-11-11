@@ -78,6 +78,7 @@ CREATE TABLE IF NOT EXISTS app_user (
   id            BIGSERIAL PRIMARY KEY,
   username      VARCHAR(64) UNIQUE,          -- 手机注册用户可空（PG 唯一约束允许多 NULL）
   password_hash VARCHAR(100) NOT NULL,
+  auth_version  BIGINT NOT NULL DEFAULT 0,
   phone         VARCHAR(20) UNIQUE,
   role          VARCHAR(20) NOT NULL DEFAULT 'USER',
   status        SMALLINT NOT NULL DEFAULT 0,
@@ -109,6 +110,7 @@ CREATE TABLE IF NOT EXISTS chat_message (
   content    TEXT,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   turn_id    VARCHAR(36),
+  evidence   TEXT NOT NULL DEFAULT '{}',
   status     VARCHAR(20) NOT NULL DEFAULT 'COMPLETE'
 );
 CREATE INDEX IF NOT EXISTS idx_msg_session ON chat_message(session_id, id);
@@ -208,6 +210,12 @@ ALTER TABLE chat_summary ADD COLUMN IF NOT EXISTS next_attempt_at TIMESTAMP NOT 
 CREATE INDEX IF NOT EXISTS idx_summary_retry ON chat_summary(next_attempt_at);
 INSERT INTO chat_summary(session_id,content)
 SELECT session_id,'' FROM chat_session ON CONFLICT(session_id) DO NOTHING;
+COMMIT;
+
+-- 停后端后升级再启动新版；加列不恢复旧消息中从未保存的证据。
+BEGIN;
+ALTER TABLE app_user ADD COLUMN IF NOT EXISTS auth_version BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE chat_message ADD COLUMN IF NOT EXISTS evidence TEXT NOT NULL DEFAULT '{}';
 COMMIT;
 
 -- ============================================================

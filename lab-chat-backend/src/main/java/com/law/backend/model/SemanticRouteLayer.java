@@ -63,7 +63,7 @@ public class SemanticRouteLayer implements RouteLayer {
             }
             log.debug("语义快筛未达阈值: best={}, score={}, threshold={}", best, bestScore, threshold);
         } catch (Exception e) {
-            log.warn("语义路由异常，放行下一层处理: {}", e.getMessage());
+            log.warn("语义路由异常，放行下一层处理: {}", e.getClass().getSimpleName());
         }
         return Optional.empty();
     }
@@ -106,7 +106,7 @@ public class SemanticRouteLayer implements RouteLayer {
                 }
                 result.put(entry.getKey(), centroid);
             } catch (Exception e) {
-                log.warn("路线质心计算失败，该路线不参与语义快筛: route={}, error={}", entry.getKey(), e.getMessage());
+                log.warn("路线质心计算失败，该路线不参与语义快筛: route={}, error={}", entry.getKey(), e.getClass().getSimpleName());
             }
         }
         log.info("语义路由质心构建完成: routes={}", result.keySet());

@@ -52,7 +52,7 @@ public class LlmRouteLayer implements RouteLayer {
             log.warn("LLM 返回非法路线，放行下一层处理: {}", decision);
         } catch (Exception e) {
             // 路由本身失败不能阻断主流程，降级放行（最终由 default 路线兜底）
-            log.warn("LLM 路由异常，放行下一层处理: {}", e.getMessage());
+            log.warn("LLM 路由异常，放行下一层处理: {}", e.getClass().getSimpleName());
         }
         return Optional.empty();
     }

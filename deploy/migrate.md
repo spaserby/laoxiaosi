@@ -1,5 +1,11 @@
 # 数据迁移决策（本地 PG → 服务器 PG）
 
+## 认证版本与证据升级
+
+执行迁移04之后，停后端并运行 `scripts/migration-05-security-and-evidence.sql`，再启动新版前后端。
+新增认证版本和消息证据列，旧 JWT 需要重新登录；不恢复旧消息中从未保存的结构化证据。
+详见[安全与证据说明](../docs/security-and-evidence.md)。
+
 ## 聊天原文归档升级
 
 先停止旧后端，再运行 `scripts/migration-04-conversation-history.sql`，最后启动新版前后端。

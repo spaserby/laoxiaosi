@@ -31,6 +31,9 @@ class ChatStreamHistoryTest {
     ChatService chat;
     ChatClient.StreamResponseSpec response;
     AtomicBoolean stop = new AtomicBoolean();
+    ModelRouter router;
+    com.law.backend.rag.LawArticleMapper lawArticles;
+    ChatClient.ChatClientRequestSpec primaryRequest;
     static final SessionOwnershipService.Owner OWNER = new SessionOwnershipService.Owner("u:900001",null);
     @BeforeEach void prepare() throws Exception {
         context = new AnnotationConfigApplicationContext(MemoryTestDatabase.class);
@@ -46,10 +49,12 @@ class ChatStreamHistoryTest {
         dependencies.put(IdentityProperties.class,new IdentityProperties());
         var rag=new RagProperties(); rag.setEnabled(false); dependencies.put(RagProperties.class,rag);
         var client=mock(ChatClient.class); var request=mock(ChatClient.ChatClientRequestSpec.class,RETURNS_SELF);
+        primaryRequest=request;
         response=mock(ChatClient.StreamResponseSpec.class);
         when(client.prompt()).thenReturn(request); when(request.stream()).thenReturn(response);
         var routed=new RoutedClient("cheap",client,List.of(),0);
-        var router=(ModelRouter)dependencies.get(ModelRouter.class);
+        router=(ModelRouter)dependencies.get(ModelRouter.class);
+        lawArticles=(com.law.backend.rag.LawArticleMapper)dependencies.get(com.law.backend.rag.LawArticleMapper.class);
         when(router.route(anyString())).thenReturn(routed); when(router.fallback()).thenReturn(routed);
         var planner=(PlannerAgent)dependencies.get(PlannerAgent.class);
         when(planner.execute(any())).thenAnswer(call -> { AgentContext ctx=call.getArgument(0); ctx.setPlan(Plan.single(ctx.getQuestion())); return ctx; });
@@ -91,5 +96,29 @@ class ChatStreamHistoryTest {
         assertTrue(events.stream().anyMatch(e -> "error".equals(e.event())));
         assertEquals("FAILED",userStatus());
         assertEquals(1,jdbc.queryForObject("select count(*) from chat_message",Integer.class));
+    }
+    @Test void fallbackReplacesPartialAttemptInsteadOfConcatenatingIt() {
+        when(response.chatResponse()).thenReturn(Flux.concat(Flux.just(answer("SYNTHETIC_PRIMARY_PARTIAL")), Flux.error(new IllegalStateException("synthetic upstream failure"))));
+        var backup=mock(ChatClient.class); var request=mock(ChatClient.ChatClientRequestSpec.class,RETURNS_SELF);
+        var output=mock(ChatClient.StreamResponseSpec.class); when(backup.prompt()).thenReturn(request); when(request.stream()).thenReturn(output);
+        when(output.chatResponse()).thenReturn(Flux.just(answer("SYNTHETIC_BACKUP_FINAL")));
+        when(router.fallback()).thenReturn(new RoutedClient("cheap",backup,List.of(),0));
+        var events=stream().collectList().block(Duration.ofSeconds(10));
+        assertTrue(events.stream().anyMatch(e -> "retry".equals(e.event())));
+        assertEquals("SYNTHETIC_BACKUP_FINAL",jdbc.queryForObject("select content from chat_message where role='ASSISTANT'",String.class));
+        assertEquals("COMPLETE",userStatus());
+        var tools=org.mockito.ArgumentCaptor.forClass(Map.class);
+        verify(primaryRequest).toolContext(tools.capture());
+        assertEquals(0,((com.law.backend.tool.ToolBudget)tools.getValue().get(com.law.backend.tool.ToolBudget.KEY)).maxCalls());
+    }
+    @Test void streamedCitationIsRestoredFromHistoryAfterGeneration() {
+        var law=new com.law.backend.rag.LawArticleEntity(); law.setId(900001L); law.setLawName("合成规则"); law.setArticleNo("第1条"); law.setContent("合成条文证据原文");
+        when(lawArticles.findByLawNameAndArticleNo("合成规则","第1条")).thenReturn(law);
+        when(response.chatResponse()).thenReturn(Flux.just(answer("依据《合成规则》第1条，给出合成答复。")));
+        var events=stream().collectList().block(Duration.ofSeconds(10));
+        assertTrue(events.stream().anyMatch(e -> "citation".equals(e.event())));
+        var restored=context.getBean(ConversationHistoryService.class).page("synthetic-stream",OWNER,null,50).data().get(1);
+        assertEquals(true,restored.get("evidenceAvailable"));
+        assertTrue(restored.get("citations").toString().contains("合成条文证据原文"));
     }
 }
