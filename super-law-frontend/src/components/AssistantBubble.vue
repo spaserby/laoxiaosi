@@ -89,7 +89,7 @@ const topScore = computed(() => {
       <p v-if="message.status && !['COMPLETE', 'RUNNING'].includes(message.status)" class="a-note">本轮生成未完成，以上为已保存的部分回复。</p>
       <span v-if="message.streaming" class="cursor"></span>
       <div v-if="message.attachmentContext" class="attachment-evidence">
-        <p>附件覆盖：{{ message.attachmentContext.selectedSections }}/{{ message.attachmentContext.totalSections }} 个章节
+        <p v-if="message.attachmentContext.totalSections">附件覆盖：{{ message.attachmentContext.selectedSections }}/{{ message.attachmentContext.totalSections }} 个章节
           · {{ message.attachmentContext.fullCoverage ? '覆盖全部已解析正文' : '未覆盖全文' }}</p>
         <p v-for="warning in message.attachmentContext.warnings" :key="warning">{{ warning }}</p>
         <button v-for="source in message.attachmentContext.sources" :key="source.fileId + ':' + source.parentId"

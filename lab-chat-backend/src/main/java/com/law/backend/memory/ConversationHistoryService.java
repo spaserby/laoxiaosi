@@ -31,16 +31,18 @@ public class ConversationHistoryService {
                 "content", Objects.requireNonNullElse(m.content(), ""), "createdAt", m.createdAt() == null ? "" : m.createdAt().toString(),
                 "status", m.status(), "turnId", Objects.requireNonNullElse(m.turnId(), "")));
             dto.put("evidenceAvailable", false);
-            if ("ASSISTANT".equals(m.role())) {
-                try {
-                    var json = JSON.readTree(Objects.requireNonNullElse(m.evidence(), "{}"));
-                    if (json != null && json.path("version").asInt() == 1) {
+            try {
+                var json = JSON.readTree(Objects.requireNonNullElse(m.evidence(), "{}"));
+                if (json != null && json.path("version").asInt() == 1) {
+                    if ("ASSISTANT".equals(m.role())) {
                         dto.put("evidenceAvailable", true);
                         if (json.path("citations").isArray()) dto.put("citations", JSON.convertValue(json.get("citations"), List.class));
                         if (json.path("attachmentContext").isObject()) dto.put("attachmentContext", JSON.convertValue(json.get("attachmentContext"), Map.class));
+                    } else if ("USER".equals(m.role()) && json.path("attachments").isArray()) {
+                        dto.put("attachments", JSON.convertValue(json.get("attachments"), List.class));
                     }
-                } catch (java.io.IOException ignored) { /* 旧记录或无效元数据不冒充可溯源证据。 */ }
-            }
+                }
+            } catch (java.io.IOException ignored) { /* 旧记录或无效元数据不冒充可溯源证据。 */ }
             return dto;
         }).toList();
         return new Page(data, more, more ? Long.toString(visible.get(0).id()) : "");

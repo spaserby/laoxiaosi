@@ -42,7 +42,7 @@ class SessionTitleRegressionTest {
                 mock(AttachmentRetrieval.class), mock(AttachmentReview.class), ownership);
         String question = "合成测试：解除合同需要满足什么条件";
         try {
-            files.turn("synthetic-session", owner, List.of(), question);
+            files.select("synthetic-session", owner, List.of(), question);
             new SessionIndexService(mapper).touch("synthetic-session", question, owner.key());
             var titles = ArgumentCaptor.forClass(String.class);
             verify(mapper, times(2)).upsert(eq("synthetic-session"), titles.capture(), anyLong(), anyLong(), eq(owner.key()));

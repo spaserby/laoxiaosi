@@ -13,6 +13,8 @@ import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
+import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.util.*;
 import java.util.concurrent.*;
@@ -28,10 +30,12 @@ public class ChatFileService {
     public record ImgMeta(int idx, String location, String caption) {}
     public record UploadedFile(String fileId, String name, int chars, boolean truncated, String kind,
                                List<ImgMeta> images, String status, int totalPages, int processedPages,
-                               List<Integer> failedPages, List<String> warnings, String error, long expiresAt) {}
+                               List<Integer> failedPages, List<String> warnings, String error, long expiresAt,
+                               String extension, long sizeBytes) {}
+    public record Original(AttachmentRepository.FileRecord metadata, Path path) {}
     public record StoredImage(int idx, String mime, byte[] bytes, String location, String caption) {}
-    public record Turn(List<AttachmentRepository.FileRecord> files, List<StoredImage> images, String memorySuffix) {}
-    private static final Set<String> EXTENSIONS = Set.of("txt", "md", "pdf", "docx", "png", "jpg", "jpeg", "webp");
+    public record Turn(List<AttachmentRepository.FileRecord> files, List<StoredImage> images) {}
+    private static final Set<String> EXTENSIONS = Set.of("txt", "md", "pdf", "doc", "docx", "png", "jpg", "jpeg", "webp");
     private static final Set<String> IMAGES = Set.of("png", "jpg", "jpeg", "webp");
     private final FileProperties properties;
     private final PrivateAttachmentStorage storage;
@@ -64,15 +68,18 @@ public class ChatFileService {
     }
     /** 限长、限量的流式写盘，不 join 整个 multipart 到 JVM 堆。 */
     public Mono<UploadedFile> upload(String sessionId, SessionOwnershipService.Owner owner, FilePart part) {
+        return upload(sessionId, owner, part, false);
+    }
+    public Mono<UploadedFile> upload(String sessionId, SessionOwnershipService.Owner owner, FilePart part, boolean deferred) {
         return Mono.defer(() -> {
             String name = safeName(part.filename());
             String extension = extension(name);
-            if (!EXTENSIONS.contains(extension)) return Mono.error(new IllegalArgumentException("支持 txt/md/pdf/docx/png/jpg/webp 格式"));
+            if (!EXTENSIONS.contains(extension)) return Mono.error(new IllegalArgumentException("支持 txt/md/pdf/doc/docx/png/jpg/webp 格式"));
             long limit = IMAGES.contains(extension) ? properties.getMaxImageBytes() : properties.getMaxFileBytes();
             String id = storage.newId();
             AtomicLong bytes = new AtomicLong();
             return Mono.fromCallable(() -> {
-                        scope(sessionId, owner, true); storage.create(id); return id;
+                        scope(sessionId, owner, true); storage.reserve(id, limit); return id;
                     }).subscribeOn(Schedulers.boundedElastic())
                     .flatMap(ignored -> DataBufferUtils.write(part.content().<DataBuffer>handle((buffer, sink) -> {
                         if (bytes.addAndGet(buffer.readableByteCount()) > limit) {
@@ -84,12 +91,21 @@ public class ChatFileService {
                         if (bytes.get() == 0) throw new IllegalArgumentException("不能上传空文件");
                         var scope = scope(sessionId, owner, false);
                         repository.create(scope, id, name, extension, bytes.get(), scope.now() + TimeUnit.HOURS.toMillis(properties.getTtlHours()),
-                                properties.getMaxFilesPerSession(), AttachmentParser.VERSION, AttachmentChunker.VERSION, properties.getEmbeddingVersion());
+                                properties.getMaxFilesPerSession(), AttachmentParser.VERSION, AttachmentChunker.VERSION,
+                                properties.getEmbeddingVersion(), deferred);
                         var result = uploaded(repository.require(scope, id));
-                        enqueue(id, extension); return result;
+                        if (!deferred) enqueue(id, extension);
+                        return result;
                     }).subscribeOn(Schedulers.boundedElastic()))
                     .onErrorResume(error -> Mono.fromRunnable(() -> discard(id, sessionId, owner)).subscribeOn(Schedulers.boundedElastic()).then(Mono.error(error)))
-                    .doFinally(signal -> { if (signal == reactor.core.publisher.SignalType.CANCEL) Schedulers.boundedElastic().schedule(() -> discard(id, sessionId, owner)); });
+                    .doFinally(signal -> {
+                        if (signal == reactor.core.publisher.SignalType.CANCEL) {
+                            Schedulers.boundedElastic().schedule(() -> {
+                                try { discard(id, sessionId, owner); }
+                                finally { storage.release(id); }
+                            });
+                        } else storage.release(id);
+                    });
         });
     }
     private void enqueue(String id, String extension) {
@@ -148,28 +164,63 @@ public class ChatFileService {
         return repository.parents(scope, List.of(id)).stream().filter(p -> p.parentId() == parentId).findFirst()
                 .orElseThrow(() -> new IllegalArgumentException("引用原文不存在或已过期")).text();
     }
-    public Turn turn(String sessionId, SessionOwnershipService.Owner owner, List<String> ids, String question) {
+    public Original original(String sessionId, SessionOwnershipService.Owner owner, String id) {
+        var file = repository.require(scope(sessionId, owner, false), id);
+        Path path = storage.path(id);
+        if (!Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)) throw new SessionAccessDeniedException();
+        return new Original(file, path);
+    }
+    public List<AttachmentRepository.FileRecord> select(String sessionId, SessionOwnershipService.Owner owner,
+                                                        List<String> ids, String question) {
         if (SessionOwnershipService.ANON.equals(owner.key())) {
             if (ids != null && !ids.isEmpty()) throw new SessionAccessDeniedException();
-            return new Turn(List.of(), List.of(), "");
+            return List.of();
         }
         ownership.register(sessionId, owner, question);
         var scope = scope(sessionId, owner, false);
-        if (ids != null && ids.size() > properties.getMaxFilesPerSession()) throw new IllegalArgumentException("本轮附件过多");
-        List<AttachmentRepository.FileRecord> files = ids == null || ids.isEmpty() ? repository.list(scope)
+        if (ids != null && ids.size() > properties.getMaxFilesPerTurn()) throw new IllegalArgumentException("本轮附件过多");
+        List<AttachmentRepository.FileRecord> files = ids == null ? repository.list(scope)
                 : ids.stream().distinct().map(id -> repository.require(scope, id)).toList();
-        for (var file : files) if (!Set.of("READY", "PARTIAL").contains(file.status()))
-            throw new IllegalArgumentException("附件尚未就绪或处理失败，请查看附件状态");
+        if (files.size() > properties.getMaxFilesPerTurn()) throw new IllegalArgumentException("请选择本轮要使用的附件");
+        return files;
+    }
+    public Turn prepareSelected(String sessionId, SessionOwnershipService.Owner owner, List<AttachmentRepository.FileRecord> selected,
+                                boolean explicit, String question, boolean includeImages) {
+        if (selected.isEmpty()) return new Turn(List.of(), List.of());
+        var files = explicit ? prepareLocal(scope(sessionId, owner, false), selected) : selected;
+        for (var file : files) {
+            if (!Set.of("READY", "PARTIAL").contains(file.status()))
+                throw new IllegalArgumentException("附件尚未就绪或处理失败，请查看附件状态");
+        }
+        if (!includeImages) return new Turn(files, List.of());
         List<StoredImage> images = new ArrayList<>();
         for (var file : files) if (IMAGES.contains(file.extension())) {
             try {
-                if (ids != null && ids.contains(file.fileId()) || question.contains("图"))
+                if (explicit || question.contains("图"))
                     images.add(new StoredImage(images.size() + 1, AttachmentParser.mime(file.extension()), Files.readAllBytes(storage.path(file.fileId())), "用户上传图片", ""));
             } catch (Exception e) { throw new IllegalArgumentException("附件原图不可用，请重新上传"); }
         }
         if (images.size() > properties.getMaxImagesPerTurn()) throw new IllegalArgumentException("本轮图片过多");
-        String suffix = files.isEmpty() ? "" : "\n[会话附件：" + String.join("、", files.stream().map(AttachmentRepository.FileRecord::name).toList()) + "；有效期24小时]";
-        return new Turn(files, images, suffix);
+        return new Turn(files, images);
+    }
+    private List<AttachmentRepository.FileRecord> prepareLocal(AttachmentRepository.Scope scope,
+                                                               List<AttachmentRepository.FileRecord> files) {
+        for (var file : files) {
+            if ("STORED".equals(file.status()) && repository.queueStored(scope, file.fileId())) enqueue(file.fileId(), file.extension());
+        }
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(properties.getProcessingTimeoutSeconds());
+        return files.stream().map(file -> {
+            var current = file;
+            while (Set.of("STORED", "QUEUED", "PROCESSING").contains(current.status())) {
+                if (System.nanoTime() >= deadline) throw new IllegalArgumentException("附件仍在处理中，请稍后重新发送本轮");
+                try { Thread.sleep(1000); }
+                catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new CancellationException(); }
+                current = repository.require(new AttachmentRepository.Scope(scope.sessionId(), scope.ownerKey(), System.currentTimeMillis()), file.fileId());
+            }
+            if (!Set.of("READY", "PARTIAL").contains(current.status()))
+                throw new IllegalArgumentException("附件处理失败，请查看附件状态后重试");
+            return current;
+        }).toList();
     }
     public AttachmentContext context(String sessionId, SessionOwnershipService.Owner owner, Turn turn, String question,
                                       int budget, boolean fullReview, Consumer<String> stage, BooleanSupplier cancelled) {
@@ -185,7 +236,8 @@ public class ChatFileService {
     private UploadedFile uploaded(AttachmentRepository.FileRecord file) {
         boolean image = IMAGES.contains(file.extension());
         return new UploadedFile(file.fileId(), file.name(), file.chars(), false, image ? "image" : file.kind(),
-                image ? List.of(new ImgMeta(1, "用户上传", "")) : List.of(), file.status(), file.totalPages(), file.processedPages(), file.failedPages(), file.warnings(), file.error(), file.expiresAt());
+                image ? List.of(new ImgMeta(1, "用户上传", "")) : List.of(), file.status(), file.totalPages(), file.processedPages(),
+                file.failedPages(), file.warnings(), file.error(), file.expiresAt(), file.extension(), file.sizeBytes());
     }
     private void discard(String id, String session, SessionOwnershipService.Owner owner) {
         try { repository.expire(new AttachmentRepository.Scope(session, owner.key(), System.currentTimeMillis()), id); }

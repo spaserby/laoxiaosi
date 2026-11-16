@@ -42,11 +42,14 @@ class ChatFileLifecycleTest {
         when(repository.list(any())).thenReturn(List.of(file)); when(repository.require(any(), eq(file.fileId()))).thenReturn(file);
         when(retrieval.retrieve(any(), anyList(), anyString(), anyInt())).thenReturn(AttachmentContext.empty());
         try (var svc = closable(service())) {
-            var first = svc.service.turn("synthetic-session", owner, List.of(file.fileId()), "付款条件是什么");
+            var first = svc.service.prepareSelected("synthetic-session", owner,
+                    svc.service.select("synthetic-session", owner, List.of(file.fileId()), "付款条件是什么"), true, "付款条件是什么", true);
             svc.service.context("synthetic-session", owner, first, "付款条件是什么", 8000, false, text -> {}, () -> false);
-            var next = svc.service.turn("synthetic-session", owner, List.of(), "那违约责任呢");
+            var next = svc.service.prepareSelected("synthetic-session", owner,
+                    svc.service.select("synthetic-session", owner, null, "那违约责任呢"), false, "那违约责任呢", true);
             svc.service.context("synthetic-session", owner, next, "该合同的违约责任", 8000, false, text -> {}, () -> false);
             assertEquals(first.files(), next.files());
+            assertTrue(svc.service.select("synthetic-session", owner, List.of(), "普通追问").isEmpty());
             verify(retrieval).retrieve(any(), eq(List.of(file)), eq("该合同的违约责任"), eq(8000));
         }
     }
@@ -55,7 +58,7 @@ class ChatFileLifecycleTest {
         try (var svc = closable(service())) {
             assertThrows(IllegalArgumentException.class, () -> svc.service.upload("synthetic-session", owner, part("12345", "67890")).block(Duration.ofSeconds(5)));
             try (var files = Files.list(directory)) { assertEquals(0, files.count()); }
-            verify(repository, never()).create(any(), anyString(), anyString(), anyString(), anyLong(), anyLong(), anyInt(), anyString(), anyString(), anyString());
+            verify(repository, never()).create(any(), anyString(), anyString(), anyString(), anyLong(), anyLong(), anyInt(), anyString(), anyString(), anyString(), anyBoolean());
         }
     }
     @Test void uploadReturnsQueuedWhileParserRunsInDedicatedWorker() throws Exception {
@@ -81,10 +84,52 @@ class ChatFileLifecycleTest {
     @Test void explicitInvalidFileOrFailedStatusDoesNotSilentlyBecomeEmptyContext() throws Exception {
         when(repository.require(any(), anyString())).thenThrow(new SessionAccessDeniedException());
         try (var svc = closable(service())) {
-            assertThrows(SessionAccessDeniedException.class, () -> svc.service.turn("synthetic-session", owner, List.of("a".repeat(32)), "问题"));
+            assertThrows(SessionAccessDeniedException.class, () -> svc.service.select("synthetic-session", owner, List.of("a".repeat(32)), "问题"));
             when(repository.list(any())).thenReturn(List.of(record("a".repeat(32), "FAILED")));
-            assertThrows(IllegalArgumentException.class, () -> svc.service.turn("synthetic-session", owner, List.of(), "追问"));
+            assertThrows(IllegalArgumentException.class, () -> svc.service.prepareSelected("synthetic-session", owner,
+                    svc.service.select("synthetic-session", owner, null, "追问"), false, "追问", true));
         }
+    }
+    @Test void deferredUploadIsAvailableAsOriginalWithoutStartingParser() throws Exception {
+        when(repository.require(any(), anyString())).thenAnswer(inv -> record(inv.getArgument(1), "STORED"));
+        try (var svc = closable(service())) {
+            var saved = svc.service.upload("synthetic-session", owner, part("synthetic original"), true).block(Duration.ofSeconds(5));
+            assertNotNull(saved);
+            assertEquals("STORED", saved.status());
+            assertEquals("synthetic original", Files.readString(svc.service.original("synthetic-session", owner, saved.fileId()).path()));
+            verify(repository, never()).start(anyString(), anyLong());
+            verifyNoInteractions(parser);
+        }
+    }
+    @Test void oneLocalSendQueuesAndWaitsForDeferredProcessing() throws Exception {
+        String id = "a".repeat(32);
+        var state = new java.util.concurrent.atomic.AtomicReference<>("STORED");
+        when(repository.require(any(), eq(id))).thenAnswer(inv -> record(id, state.get()));
+        when(repository.queueStored(any(), eq(id))).thenAnswer(inv -> state.compareAndSet("STORED", "QUEUED"));
+        when(repository.start(eq(id), anyLong())).thenAnswer(inv -> state.compareAndSet("QUEUED", "PROCESSING"));
+        when(parser.parse(any(), eq("txt"))).thenReturn(new AttachmentParser.Parsed("合成条款", List.of(), 1, 1, List.of(), List.of(), "text"));
+        doAnswer(inv -> { state.set("READY"); return null; })
+                .when(repository).complete(eq(id), any(), any(), anyList(), anyList(), anyLong());
+        try (var svc = closable(service())) {
+            var selection = svc.service.select("synthetic-session", owner, List.of(id), "合成问题");
+            assertEquals("READY", svc.service.prepareSelected("synthetic-session", owner, selection, true, "合成问题", true).files().get(0).status());
+            verify(parser).parse(any(), eq("txt"));
+        }
+    }
+    @Test void deferredDiskAdmissionAccountsForExistingFilesAndConcurrentReservations() throws Exception {
+        properties.setStorageDir(directory.toString());
+        properties.setMaxPrivateStorageBytes(16);
+        var storage = new PrivateAttachmentStorage(properties);
+        String first = storage.newId();
+        String second = storage.newId();
+        storage.reserve(first, 10);
+        assertThrows(IllegalArgumentException.class, () -> storage.reserve(second, 7));
+        assertFalse(Files.exists(storage.path(second)));
+        Files.writeString(storage.path(first), "sample");
+        storage.release(first);
+        storage.reserve(second, 10);
+        storage.release(second);
+        assertThrows(IllegalArgumentException.class, () -> storage.reserve(storage.newId(), 11));
     }
     private record CloseableService(ChatFileService service) implements AutoCloseable { public void close() { service.close(); } }
     private CloseableService closable(ChatFileService service) { return new CloseableService(service); }

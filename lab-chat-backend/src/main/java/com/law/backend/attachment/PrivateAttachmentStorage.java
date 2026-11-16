@@ -5,15 +5,21 @@ import org.springframework.stereotype.Component;
 
 import java.io.IOException;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.attribute.PosixFilePermissions;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.UUID;
 
 /** 上传名不参与磁盘路径；目录不映射到 Web 静态资源。 */
 @Component
 public class PrivateAttachmentStorage {
     private final Path root;
+    private final FileProperties properties;
+    private final Map<String, Long> uploads = new HashMap<>();
     public PrivateAttachmentStorage(FileProperties properties) throws IOException {
+        this.properties = properties;
         root = Path.of(properties.getStorageDir()).toAbsolutePath().normalize();
         Files.createDirectories(root);
         if (Files.isSymbolicLink(root)) throw new IOException("附件目录不得是符号链接");
@@ -31,6 +37,30 @@ public class PrivateAttachmentStorage {
         catch (UnsupportedOperationException ignored) { }
         return path;
     }
+    /** 预留单次上传的最大字节，计入其他正在写的原件和重启前留下的文件。 */
+    public synchronized void reserve(String id, long bytes) throws IOException {
+        if (uploads.size() >= properties.getMaxConcurrentUploads())
+            throw new IllegalArgumentException("附件上传繁忙，请稍后重试");
+        long reservedBytes = bytes;
+        for (long reserved : uploads.values()) reservedBytes += reserved;
+        long available = properties.getMaxPrivateStorageBytes() - reservedBytes;
+        try (var entries = Files.list(root)) {
+            var iterator = entries.iterator();
+            while (available >= 0 && iterator.hasNext()) {
+                Path entry = iterator.next();
+                String name = entry.getFileName().toString();
+                if (!name.matches("[a-f0-9]{32}") || uploads.containsKey(name)
+                        || !Files.isRegularFile(entry, LinkOption.NOFOLLOW_LINKS)) continue;
+                try { available -= Files.size(entry); }
+                catch (java.nio.file.NoSuchFileException ignored) { /* 同时发生的过期回收。 */ }
+            }
+        }
+        if (available < 0 || Files.getFileStore(root).getUsableSpace() < reservedBytes)
+            throw new IllegalArgumentException("附件存储空间暂不足，请稍后重试");
+        create(id);
+        uploads.put(id, bytes);
+    }
+    public synchronized void release(String id) { uploads.remove(id); }
     public void delete(String id) throws IOException { Files.deleteIfExists(path(id)); }
     public java.util.List<String> orphanCandidates(long before) throws IOException {
         try (var files = Files.list(root)) {

@@ -47,6 +47,18 @@ class AttachmentPostgresTest {
             assertTrue(repository.dense(alice, List.of(a), new float[]{1, 0, 0}, 10, "other-version").isEmpty());
             repository.expire(alice, a); repository.purge(a, now);
             assertTrue(repository.children(alice, List.of(a)).isEmpty()); assertFalse(repository.exists(a));
+            String original = "c".repeat(32);
+            repository.create(alice, original, "synthetic.doc", "doc", 4, now + 1000, 3,
+                    "parser", "chunker", "embedding-test", true);
+            assertEquals("STORED", repository.require(alice, original).status());
+            var wrongOwner = new AttachmentRepository.Scope("session-a", bob.ownerKey(), now);
+            var expired = new AttachmentRepository.Scope(alice.sessionId(), alice.ownerKey(), now + 1000);
+            assertThrows(com.law.backend.service.SessionAccessDeniedException.class, () -> repository.require(wrongOwner, original));
+            assertThrows(com.law.backend.service.SessionAccessDeniedException.class, () -> repository.require(bob, original));
+            assertThrows(com.law.backend.service.SessionAccessDeniedException.class, () -> repository.require(expired, original));
+            assertFalse(repository.queueStored(wrongOwner, original));
+            assertTrue(repository.queueStored(alice, original));
+            assertFalse(repository.queueStored(alice, original));
             verifySessionTitles(scopedDs, jdbc);
         } finally { admin.execute("drop schema " + schema + " cascade"); }
     }

@@ -66,17 +66,9 @@ public class AnswerReviewer {
         }
         // 规则②：答案中的每个条文引用必须真实命中过
         List<String[]> cited = extractCitations(answer);
-        if (!cited.isEmpty()) {
-            if (registry == null || registry.isEmpty()) {
-                return new ReviewResult(false, "引用了具体条文但本轮检索无任何命中");
-            }
-            for (String[] c : cited) {
-                if (!registry.contains(c[0], c[1])) {
-                    return new ReviewResult(false,
-                            "引用的" + c[0] + c[1] + "不在本轮检索结果中，疑似编造");
-                }
-            }
-        } else if (!answer.contains("网址：") && !answer.contains("来源：")) {
+        var citationReview = reviewCitations(cited, registry);
+        if (!citationReview.pass()) return citationReview;
+        if (cited.isEmpty() && !answer.contains("网址：") && !answer.contains("来源：")) {
             // 规则③：无条文引用时须有联网来源标注
             return new ReviewResult(false, "回答缺少法条引用或来源标注");
         }
@@ -85,6 +77,21 @@ public class AnswerReviewer {
             return new ReviewResult(false, "回答过短");
         }
         return new ReviewResult(true, "规则审校通过");
+    }
+
+    /** 直传可仅回答文件内容；若使用具体法条，仍要求法条来自本轮检索。 */
+    public ReviewResult reviewCitations(String answer, CitationRegistry registry) {
+        return reviewCitations(extractCitations(answer), registry);
+    }
+
+    private ReviewResult reviewCitations(List<String[]> cited, CitationRegistry registry) {
+        if (!cited.isEmpty() && (registry == null || registry.isEmpty()))
+            return new ReviewResult(false, "引用了具体条文但本轮检索无任何命中");
+        for (String[] c : cited) {
+            if (!registry.contains(c[0], c[1]))
+                return new ReviewResult(false, "引用的" + c[0] + c[1] + "不在本轮检索结果中，疑似编造");
+        }
+        return new ReviewResult(true, "引用核对通过");
     }
 
     /** 兼容旧调用的便捷重载（无引用集合，仅格式校验） */

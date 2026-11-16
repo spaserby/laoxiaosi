@@ -89,6 +89,34 @@ test('历史加载保留结构化来源和覆盖信息', async () => {
   assert.deepEqual(chat.currentMessages[0].attachmentContext, context)
   assert.equal(chat.currentMessages[0].citations[0].text, '合成条款')
 })
+test('直传只提交本轮选择，附件转入消息并可从历史恢复', async () => {
+  const { chat } = setup()
+  const sid = 'synthetic-native'
+  const pdf = { fileId: 'synthetic-pdf', name: '合成.pdf', extension: 'pdf', status: 'STORED', expiresAt: Date.now() + 60000 }
+  const image = { ...pdf, fileId: 'synthetic-png', name: '合成.png', extension: 'png' }
+  chat.currentSessionId = sid
+  chat.attachmentsBySession[sid] = [pdf, image, { ...pdf, fileId: 'previously-sent' }]
+  chat.draftAttachments[sid] = [pdf, image]
+  const requests = []
+  globalThis.fetch = async (_url, options) => {
+    requests.push(JSON.parse(options.body))
+    return new Response('event: done\ndata: [DONE]\n\n')
+  }
+  assert.equal(chat.send('合成提问', chat.currentDraftAttachments, 'native', 'deepseek-files'), true)
+  assert.deepEqual(requests[0].fileIds, [pdf.fileId, image.fileId])
+  assert.equal(requests[0].nativeTarget, 'deepseek-files')
+  assert.deepEqual(chat.currentDraftAttachments, [])
+  const attachments = chat.currentMessages[0].attachments
+  assert.deepEqual(attachments.map(file => file.fileId), requests[0].fileIds)
+  const limit = Date.now() + 2000
+  while (chat.isStreaming && Date.now() < limit) await new Promise(resolve => setTimeout(resolve, 5))
+  chat.send('纯文字追问', chat.currentDraftAttachments)
+  assert.deepEqual(requests[1].fileIds, [])
+  while (chat.isStreaming && Date.now() < limit) await new Promise(resolve => setTimeout(resolve, 5))
+  reply = () => ({ data: [{ id: '1', role: 'user', content: '合成提问', attachments }], hasMore: false })
+  await chat.loadHistory(sid)
+  assert.equal(chat.currentMessages[0].attachments[1].name, image.name)
+})
 test('身份切换后旧SSE和缓冲不能写入新身份', async () => {
   const { chat } = setup(); chat.loadSessions=async () => {}
   let controller

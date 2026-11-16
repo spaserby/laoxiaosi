@@ -7,4 +7,6 @@ public record AttachmentContext(String text, List<Source> sources, List<String> 
                                 int selectedSections, int totalSections, boolean fullCoverage) {
     public record Source(String fileId, String name, int parentId, String location, int start, int end, String label) {}
     public static AttachmentContext empty() { return new AttachmentContext("", List.of(), List.of(), 0, 0, false); }
+    public record Evidence(List<Source> sources, List<String> warnings, int selectedSections, int totalSections, boolean fullCoverage) {}
+    public Evidence evidence() { return new Evidence(sources, warnings, selectedSections, totalSections, fullCoverage); }
 }

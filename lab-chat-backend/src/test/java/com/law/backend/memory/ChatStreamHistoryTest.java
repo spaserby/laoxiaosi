@@ -32,6 +32,8 @@ class ChatStreamHistoryTest {
     ChatClient.StreamResponseSpec response;
     AtomicBoolean stop = new AtomicBoolean();
     ModelRouter router;
+    ChatFileService files;
+    NativeAttachmentGateway nativeGateway;
     com.law.backend.rag.LawArticleMapper lawArticles;
     ChatClient.ChatClientRequestSpec primaryRequest;
     static final SessionOwnershipService.Owner OWNER = new SessionOwnershipService.Owner("u:900001",null);
@@ -58,9 +60,10 @@ class ChatStreamHistoryTest {
         when(router.route(anyString())).thenReturn(routed); when(router.fallback()).thenReturn(routed);
         var planner=(PlannerAgent)dependencies.get(PlannerAgent.class);
         when(planner.execute(any())).thenAnswer(call -> { AgentContext ctx=call.getArgument(0); ctx.setPlan(Plan.single(ctx.getQuestion())); return ctx; });
-        var files=(ChatFileService)dependencies.get(ChatFileService.class);
-        var turn=new ChatFileService.Turn(List.of(),List.of(),"");
-        when(files.turn(anyString(),any(),any(),anyString())).thenReturn(turn);
+        files=(ChatFileService)dependencies.get(ChatFileService.class);
+        nativeGateway=(NativeAttachmentGateway)dependencies.get(NativeAttachmentGateway.class);
+        var turn=new ChatFileService.Turn(List.of(),List.of());
+        when(files.prepareSelected(anyString(),any(),anyList(),anyBoolean(),anyString(),anyBoolean())).thenReturn(turn);
         when(files.context(anyString(),any(),any(),anyString(),anyInt(),anyBoolean(),any(),any())).thenReturn(AttachmentContext.empty());
         var redis=mock(RedissonClient.class,RETURNS_DEEP_STUBS); dependencies.put(RedissonClient.class,redis);
         when(redis.getBucket(anyString()).isExistsAsync()).thenAnswer(call -> new CompletableFutureWrapper<>(stop.get()));
@@ -120,5 +123,44 @@ class ChatStreamHistoryTest {
         var restored=context.getBean(ConversationHistoryService.class).page("synthetic-stream",OWNER,null,50).data().get(1);
         assertEquals(true,restored.get("evidenceAvailable"));
         assertTrue(restored.get("citations").toString().contains("合成条文证据原文"));
+    }
+
+    @Test void nativeTurnPersistsOnlySelectedAttachmentMetadataAndOriginalQuestion() {
+        String id = "a".repeat(32);
+        var file = new AttachmentRepository.FileRecord(id, "合成.doc", "doc", "STORED", "text", 0, 0, 0,
+                List.of(), List.of(), "", Long.MAX_VALUE, 100);
+        var selected = List.of(file);
+        var ids = List.of(id);
+        var direct = new NativeAttachmentGateway.Request("test-attachment-model", "synthetic-stream", OWNER, ids);
+        when(files.select("synthetic-stream", OWNER, ids, "合成问题")).thenReturn(selected);
+        when(nativeGateway.prepare("test-attachment-model", "synthetic-stream", OWNER, selected)).thenReturn(direct);
+        when(nativeGateway.answer(eq(direct), anyString(), eq("合成问题"))).thenReturn("合成附件答复");
+        var events = chat.chat("synthetic-stream", "合成问题", null, ids, OWNER, false, "test-attachment-model")
+                .collectList().block(Duration.ofSeconds(10));
+        assertTrue(events.stream().anyMatch(e -> "token".equals(e.event()) && "\"合成附件答复\"".equals(e.data())));
+        var evidence = events.stream().filter(e -> "attachment".equals(e.event())).findFirst().orElseThrow();
+        assertFalse(evidence.data().contains("\"text\":"));
+        assertEquals("COMPLETE", userStatus());
+        var page = context.getBean(ConversationHistoryService.class).page("synthetic-stream", OWNER, null, 50);
+        assertEquals("合成问题", page.data().get(0).get("content"));
+        assertTrue(page.data().get(0).get("attachments").toString().contains(file.name()));
+        verify(files, never()).context(anyString(), any(), any(), anyString(), anyInt(), anyBoolean(), any(), any());
+        verifyNoInteractions(router);
+    }
+
+    @Test void localPreparationFailureKeepsTheOriginalInReloadedHistory() {
+        var file = new AttachmentRepository.FileRecord("b".repeat(32), "合成.pdf", "pdf", "STORED", "text", 0, 0, 0,
+                List.of(), List.of(), "", Long.MAX_VALUE, 100);
+        var selected = List.of(file);
+        var ids = List.of(file.fileId());
+        when(files.select("synthetic-stream", OWNER, ids, "合成问题")).thenReturn(selected);
+        when(files.prepareSelected("synthetic-stream", OWNER, selected, true, "合成问题", true))
+                .thenThrow(new IllegalArgumentException("合成解析失败"));
+        var events = chat.chat("synthetic-stream", "合成问题", null, ids, OWNER, false)
+                .collectList().block(Duration.ofSeconds(10));
+        assertTrue(events.stream().anyMatch(e -> "error".equals(e.event())));
+        assertEquals("FAILED", userStatus());
+        var page = context.getBean(ConversationHistoryService.class).page("synthetic-stream", OWNER, null, 50);
+        assertTrue(page.data().get(0).get("attachments").toString().contains(file.name()));
     }
 }

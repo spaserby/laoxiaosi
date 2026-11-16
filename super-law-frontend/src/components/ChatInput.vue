@@ -3,9 +3,9 @@
  * 投递口（V9 公报问答台皮肤）：白纸玻璃 dock + 藏青聚焦 + 宽幅"发起咨询"按钮
  * 交互逻辑与 idle 发送（空输入置灰）/ streaming 同位置变"停止"；Enter 发送
  */
-import { ref, computed, watch, onBeforeUnmount } from 'vue'
+import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import { useChatStore } from '../stores/chat'
-import { uploadFiles, deleteAttachment, retryAttachment } from '../api/session'
+import { uploadFiles, deleteAttachment, retryAttachment, fileCapabilities } from '../api/session'
 import { attachmentState, attachmentsReady } from '../utils/attachments'
 import { Scale, Paperclip, ArrowRight, ShieldCheck, FileText, Image as ImageIcon, X } from 'lucide-vue-next'
 import { ElMessage } from 'element-plus'
@@ -22,16 +22,39 @@ const text = ref('')
    按视口换短文案；发送按钮同步收为图标（theme.css 隐藏 .send-label） */
 const mqMobile = window.matchMedia('(max-width: 860px)')
 const isMobile = ref(mqMobile.matches)
-mqMobile.addEventListener('change', (e) => { isMobile.value = e.matches })
+const updateMobile = (e) => { isMobile.value = e.matches }
+mqMobile.addEventListener('change', updateMobile)
 const placeholderText = computed(() =>
   isMobile.value ? '写下法律问题…' : '写下法律问题，Enter 发起咨询（仅附件也可直接发送）')
 
 /* ---------- 会话附件（DeepSeek/Kimi 式文档上传） ---------- */
 const fileInput = ref(null)
-const attachments = computed(() => store.currentAttachments)
+const attachments = computed(() => store.currentDraftAttachments)
 const uploading = ref(false)
+const removing = ref(false)
 const statusUnavailable = computed(() => Boolean(store.attachmentErrors[store.currentSessionId]))
 const mode = ref('qa')
+const targets = ref([])
+const nativeTarget = ref('')
+const compatibleTargets = computed(() => targets.value.filter(target =>
+  attachments.value.every(file => target.formats.includes(file.extension)) &&
+  attachments.value.reduce((total, file) => total + (file.sizeBytes || 0), 0) <= target.maxBytes))
+const selectedTarget = computed(() => compatibleTargets.value.find(target => target.id === nativeTarget.value))
+const canSubmit = computed(() => Boolean((text.value.trim() || attachments.value.length) &&
+  !store.isStreaming && !store.currentHistoryPage.loading && !uploading.value && !removing.value &&
+  (attachments.value.length === 0 || (!statusUnavailable.value && attachmentsReady(attachments.value, Date.now(), mode.value === 'native') &&
+    (mode.value !== 'native' || selectedTarget.value)))))
+watch(compatibleTargets, options => {
+  if (!options.some(target => target.id === nativeTarget.value)) {
+    if (mode.value === 'native') {
+      nativeTarget.value = ''
+    } else nativeTarget.value = options[0]?.id || ''
+  }
+}, { immediate: true })
+onMounted(async () => {
+  try { targets.value = await fileCapabilities() }
+  catch { /* 片段问答与全文审查仍然可用。 */ }
+})
 let uploadController = null
 let uploadSession = null
 let pollTimer = null
@@ -59,10 +82,15 @@ watch(() => store.currentSessionId, sid => {
   if (uploadSession && sid !== uploadSession) uploadController?.abort()
   schedulePoll()
 })
-onBeforeUnmount(() => { disposed = true; clearTimeout(pollTimer); uploadController?.abort() })
+onBeforeUnmount(() => {
+  disposed = true
+  clearTimeout(pollTimer)
+  uploadController?.abort()
+  mqMobile.removeEventListener('change', updateMobile)
+})
 
 function pickFiles() {
-  if (store.isStreaming || uploading.value) return
+  if (store.isStreaming || uploading.value || removing.value) return
   fileInput.value?.click()
 }
 
@@ -76,24 +104,29 @@ async function onFilesPicked(e) {
   }
   uploading.value = true
   const sid = store.ensureSession()
+  const epoch = store.identityEpoch
   uploadSession = sid
+  store.uploadingAttachmentsFor = sid
   const controller = new AbortController()
   uploadController = controller
   try {
     const fd = new FormData()
     picked.forEach(f => fd.append('files', f))
     const ups = await uploadFiles(fd, sid, controller.signal)
+    if (epoch !== store.identityEpoch || sid !== store.currentSessionId || disposed) return
     // 本地缩略图预览（objectURL 仅当前页面会话有效，不进后端）
     ups.forEach((u, i) => {
       const src = picked[i]
       if (src && u.kind === 'image') u.url = URL.createObjectURL(src)
     })
     store.attachmentsBySession[sid] = [...(store.attachmentsBySession[sid] || []), ...ups]
-    await refresh(sid)
+    store.draftAttachments[sid] = [...(store.draftAttachments[sid] || []), ...ups]
+    store.attachmentErrors[sid] = false
     store.loadSessions()
   } catch (err) {
     if (err.code !== 'ERR_CANCELED') ElMessage.error(err.response?.data?.message || err.message || '上传失败')
   } finally {
+    if (epoch === store.identityEpoch && store.uploadingAttachmentsFor === sid) store.uploadingAttachmentsFor = null
     uploading.value = false
     uploadController = null
     uploadSession = null
@@ -102,11 +135,18 @@ async function onFilesPicked(e) {
 
 async function removeAttachment(file) {
   const sid = store.currentSessionId
+  if (removing.value) return
+  removing.value = true
   try {
-    await deleteAttachment(sid, file.fileId)
-    if (file.url) URL.revokeObjectURL(file.url)
-    await refresh(sid)
+    const epoch = store.identityEpoch
+    if (!file.reused && file.expiresAt > Date.now()) await deleteAttachment(sid, file.fileId)
+    if (store.identityEpoch !== epoch) return
+    if (!file.reused && file.url) URL.revokeObjectURL(file.url)
+    store.draftAttachments[sid] = (store.draftAttachments[sid] || []).filter(a => a.fileId !== file.fileId)
+    if (!file.reused) store.attachmentsBySession[sid] = (store.attachmentsBySession[sid] || []).filter(a => a.fileId !== file.fileId)
+    if (sid === store.currentSessionId && !store.draftAttachments[sid].length) mode.value = 'qa'
   } catch (err) { ElMessage.error(err.response?.data?.message || '移除失败，请重试') }
+  finally { removing.value = false }
 }
 async function retry(file) {
   const sid = store.currentSessionId
@@ -116,10 +156,17 @@ async function retry(file) {
 
 function submit() {
   const t = text.value.trim()
-  // 纯附件也可发送（无文字时用默认引导语，保证用户气泡与模型指令非空）
-  if ((!t && !attachments.value.length) || store.isStreaming || store.currentHistoryPage.loading || uploading.value || statusUnavailable.value || !attachmentsReady(attachments.value)) return
-  store.send(t || (mode.value === 'review' ? '请逐章审查文档中的风险、限制条件和例外，给出原文依据与修改建议。' : '请结合我上传的附件内容进行解答。'), attachments.value, mode.value)
-  text.value = ''
+  if (!canSubmit.value) return
+  if (attachments.value.some(file => file.expiresAt <= Date.now())) {
+    ElMessage.warning('附件已过期，请移除或重新上传')
+    return
+  }
+  const turnMode = attachments.value.length ? mode.value : 'qa'
+  const question = t || (turnMode === 'review' ? '请逐章审查文档中的风险、限制条件和例外，给出原文依据与修改建议。' : '请结合我上传的附件内容进行解答。')
+  if (store.send(question, attachments.value, turnMode, turnMode === 'native' ? nativeTarget.value : undefined)) {
+    text.value = ''
+    mode.value = 'qa'
+  }
 }
 
 function onKey(e) {
@@ -141,8 +188,8 @@ function onKey(e) {
           <FileText v-else :size="12" />
           {{ a.name }}
           <em>{{ attachmentState(a) }}</em>
-          <button v-if="a.status === 'FAILED' || a.status === 'PARTIAL' || a.warnings?.some(w => w.includes('向量化'))" type="button" :disabled="store.isStreaming" @click="retry(a)">重试</button>
-          <button type="button" :disabled="store.isStreaming" aria-label="移除附件" @click="removeAttachment(a)"><X :size="11" /></button>
+          <button v-if="mode !== 'native' && (a.status === 'FAILED' || a.failedPages?.length || a.warnings?.some(w => w.includes('向量化')))" type="button" :disabled="store.isStreaming" @click="retry(a)">重试解析</button>
+          <button type="button" :disabled="store.isStreaming || removing" aria-label="移除附件" @click="removeAttachment(a)"><X :size="11" /></button>
         </span>
         <span v-if="uploading" class="attach-chip up">上传中…</span>
         <span v-if="statusUnavailable" class="attach-chip up">附件状态暂不可用，正在重试…</span>
@@ -150,7 +197,18 @@ function onKey(e) {
       <div v-if="attachments.length" class="attach-mode">
         <label><input v-model="mode" type="radio" value="qa" :disabled="store.isStreaming" /> 相关片段问答</label>
         <label><input v-model="mode" type="radio" value="review" :disabled="store.isStreaming" /> 逐章全文审查</label>
-        <small>附件保留 24 小时，可继续追问；全文审查耗时较长</small>
+        <label v-if="compatibleTargets.length || mode === 'native'"><input v-model="mode" type="radio" value="native" :disabled="store.isStreaming" /> 原件直传</label>
+        <template v-if="mode === 'native'">
+          <label v-if="compatibleTargets.length">接收方
+            <select v-model="nativeTarget" aria-label="原件接收方">
+              <option disabled value="">请选择</option>
+              <option v-for="target in compatibleTargets" :key="target.id" :value="target.id">{{ target.label }}</option>
+            </select>
+          </label>
+          <small v-if="selectedTarget">发送时会将本轮原件交给 {{ selectedTarget.label }} 处理，PDF 合计最多 {{ selectedTarget.maxPdfPages }} 页。</small>
+          <small v-else>请选择支持本轮文件格式和大小的接收方。</small>
+        </template>
+        <small v-else-if="targets.length && !compatibleTargets.length">当前附件超出已配置直传模型的格式或大小限制。</small>
       </div>
       <div v-for="a in attachments.filter(a => a.error || a.warnings?.length)" :key="a.fileId + '-notice'" class="attach-notice">
         {{ a.name }}：{{ a.error || a.warnings.join('；') }}<template v-if="a.failedPages?.length">（失败页：{{ a.failedPages.join('、') }}）</template>
@@ -163,14 +221,14 @@ function onKey(e) {
                   @keydown="onKey" />
         <!-- 附件由后端限制大小并排队解析；超限明确报错。 -->
         <input ref="fileInput" type="file" hidden multiple
-               accept=".txt,.md,.pdf,.docx,.png,.jpg,.jpeg,.webp" @change="onFilesPicked" />
+               accept=".txt,.md,.pdf,.doc,.docx,.png,.jpg,.jpeg,.webp" @change="onFilesPicked" />
         <button type="button" class="dock-btn" :class="{ busy: uploading }"
-                :disabled="uploading || store.isStreaming" aria-label="上传文档或图片" title="文档≤20MB、200页；图片≤8MB；每会话最多3个，可移除"
+                :disabled="uploading || removing || store.isStreaming" aria-label="上传文档或图片" title="支持 PDF、DOC、DOCX 和图片，单次最多 3 个"
                 @click="pickFiles">
           <Paperclip :size="16" />
         </button>
         <!-- 发送/停止一体化：streaming 时同位置变停止；有附件无文字也可发 -->
-        <button v-if="!store.isStreaming" type="submit" class="send-btn" :disabled="(!text.trim() && !attachments.length) || store.currentHistoryPage.loading || uploading || statusUnavailable || !attachmentsReady(attachments)">
+        <button v-if="!store.isStreaming" type="submit" class="send-btn" :disabled="!canSubmit">
           <span class="send-label">发起咨询</span><ArrowRight :size="14" />
         </button>
         <button v-else type="button" class="send-btn stop" title="停止生成" @click="store.stop()">

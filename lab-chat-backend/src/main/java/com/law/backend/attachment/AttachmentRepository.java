@@ -56,16 +56,25 @@ public class AttachmentRepository {
     /** 会话行锁使容量检查与登记原子化；上传正文完成后才登记。 */
     public void create(Scope scope, String id, String name, String extension, long size, long expires, int maxFiles,
                        String parser, String chunker, String embedder) {
+        create(scope, id, name, extension, size, expires, maxFiles, parser, chunker, embedder, false);
+    }
+    public void create(Scope scope, String id, String name, String extension, long size, long expires, int maxFiles,
+                       String parser, String chunker, String embedder, boolean deferred) {
         tx.executeWithoutResult(status -> {
             var owner = jdbc.queryForList("select owner_key from chat_session where session_id=:session for update", params(scope), String.class);
             if (owner.isEmpty() || !scope.ownerKey().equals(owner.get(0))) throw new SessionAccessDeniedException();
             Integer count = jdbc.queryForObject("select count(*) from chat_attachment a where" + AUTH, params(scope), Integer.class);
             if (count != null && count >= maxFiles) throw new IllegalArgumentException("每个会话最多保留 " + maxFiles + " 个附件，请移除后重试");
             var p = params(scope).addValue("id", id).addValue("name", name).addValue("ext", extension).addValue("size", size)
-                    .addValue("expires", expires).addValue("parser", parser).addValue("chunker", chunker).addValue("embedder", embedder);
+                    .addValue("expires", expires).addValue("parser", parser).addValue("chunker", chunker).addValue("embedder", embedder)
+                    .addValue("status", deferred ? "STORED" : "QUEUED");
             jdbc.update("insert into chat_attachment(file_id,session_id,owner_key,name,extension,size_bytes,status,parser_version,chunker_version,embedding_version,created_at,updated_at,expires_at)"
-                    + " values(:id,:session,:owner,:name,:ext,:size,'QUEUED',:parser,:chunker,:embedder,:now,:now,:expires)", p);
+                    + " values(:id,:session,:owner,:name,:ext,:size,:status,:parser,:chunker,:embedder,:now,:now,:expires)", p);
         });
+    }
+    public boolean queueStored(Scope scope, String id) {
+        return jdbc.update("update chat_attachment a set status='QUEUED',updated_at=:now where" + AUTH
+                + " and a.file_id=:id and a.status='STORED'", params(scope).addValue("id", id)) == 1;
     }
     /** 工作者只接受尚未开始且未过期的任务；重试、重复调度不会并行处理同一个文件。 */
     public boolean start(String id, long now) {

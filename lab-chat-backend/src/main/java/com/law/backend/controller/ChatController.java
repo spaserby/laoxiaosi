@@ -1,6 +1,7 @@
 package com.law.backend.controller;
 
 import com.law.backend.auth.AuthService;
+import com.law.backend.attachment.NativeAttachmentGateway;
 import com.law.backend.quota.QuotaService;
 import com.law.backend.service.ChatFileService;
 import com.law.backend.service.ChatService;
@@ -10,6 +11,11 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.redisson.api.RedissonClient;
 import org.springframework.http.MediaType;
+import org.springframework.http.ContentDisposition;
+import org.springframework.http.ResponseEntity;
+import org.springframework.core.io.buffer.DataBuffer;
+import org.springframework.core.io.buffer.DataBufferUtils;
+import org.springframework.core.io.buffer.DefaultDataBufferFactory;
 import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -53,6 +59,7 @@ public class ChatController {
     private final ChatFileService chatFileService;
     /** 会话归属校验（登录按 userId，匿名按 X-Guest-Key） */
     private final com.law.backend.service.SessionOwnershipService ownershipService;
+    private final NativeAttachmentGateway nativeAttachments;
 
     /**
      * 文档流式写入私有目录，绑定会话并异步解析；返回 QUEUED 元数据供轮询。
@@ -62,11 +69,13 @@ public class ChatController {
     @PostMapping(value = "/files", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public reactor.core.publisher.Mono<List<ChatFileService.UploadedFile>> uploadFiles(
             @RequestPart("files") List<org.springframework.http.codec.multipart.FilePart> parts,
-            @RequestParam String sessionId, @AuthenticationPrincipal Long userId, ServerWebExchange exchange) {
+            @RequestParam String sessionId, @RequestParam(defaultValue = "false") boolean deferProcessing,
+            @AuthenticationPrincipal Long userId, ServerWebExchange exchange) {
         if (parts.isEmpty() || parts.size() > 3) return Mono.error(new IllegalArgumentException("一次上传 1 至 3 个附件"));
         var owner = ownershipService.resolve(exchange.getRequest().getHeaders(), userId);
         var uploaded = new java.util.concurrent.CopyOnWriteArrayList<ChatFileService.UploadedFile>();
-        return Flux.fromIterable(parts).concatMap(part -> chatFileService.upload(sessionId, owner, part))
+        return Flux.fromIterable(parts).concatMap(part -> deferProcessing
+                        ? chatFileService.upload(sessionId, owner, part, true) : chatFileService.upload(sessionId, owner, part))
                 .doOnNext(uploaded::add).collectList()
                 .onErrorResume(error -> Blocking.run(() -> uploaded.forEach(file -> chatFileService.delete(sessionId, owner, file.fileId())))
                         .onErrorComplete().then(Mono.error(error)))
@@ -74,6 +83,24 @@ public class ChatController {
                     if (signal == reactor.core.publisher.SignalType.CANCEL) Schedulers.boundedElastic().schedule(() ->
                             uploaded.forEach(file -> chatFileService.delete(sessionId, owner, file.fileId())));
                 });
+    }
+
+    @GetMapping("/files/capabilities")
+    public List<NativeAttachmentGateway.Capability> fileCapabilities() { return nativeAttachments.capabilities(); }
+
+    @GetMapping("/files/{fileId}/original")
+    public Mono<ResponseEntity<Flux<DataBuffer>>> downloadOriginal(
+            @org.springframework.web.bind.annotation.PathVariable String fileId, @RequestParam String sessionId,
+            @AuthenticationPrincipal Long userId, ServerWebExchange exchange) {
+        return Blocking.call(() -> chatFileService.original(sessionId, ownershipService.resolve(exchange.getRequest().getHeaders(), userId), fileId))
+                .map(original -> ResponseEntity.ok().contentType(MediaType.APPLICATION_OCTET_STREAM)
+                        .contentLength(original.metadata().sizeBytes())
+                        .header("Cache-Control", "private, no-store")
+                        .header("X-Content-Type-Options", "nosniff")
+                        .header("Content-Disposition", ContentDisposition.attachment()
+                                .filename(original.metadata().name(), java.nio.charset.StandardCharsets.UTF_8).build().toString())
+                        .body(DataBufferUtils.read(original.path(), DefaultDataBufferFactory.sharedInstance, 64 * 1024)
+                                .subscribeOn(Schedulers.boundedElastic())));
     }
 
     @GetMapping("/files")
@@ -113,11 +140,11 @@ public class ChatController {
                                                 @RequestParam(required = false) List<String> fileIds,
                                                 @AuthenticationPrincipal Long userId,
                                                 ServerWebExchange exchange) {
-        return streamInternal(sessionId, userMessage, fileIds, "qa", userId, exchange);
+        return streamInternal(sessionId, userMessage, fileIds, "qa", null, userId, exchange);
     }
 
     /** POST 流式聊天请求体（会话 ID + 问题 + 附件） */
-    public record StreamRequest(String sessionId, String userMessage, List<String> fileIds, String mode) {
+    public record StreamRequest(String sessionId, String userMessage, List<String> fileIds, String mode, String nativeTarget) {
     }
 
     /**
@@ -130,12 +157,12 @@ public class ChatController {
     public Flux<ServerSentEvent<String>> streamPost(@RequestBody StreamRequest request,
                                                      @AuthenticationPrincipal Long userId,
                                                      ServerWebExchange exchange) {
-        return streamInternal(request.sessionId(), request.userMessage(), request.fileIds(), request.mode(),
+        return streamInternal(request.sessionId(), request.userMessage(), request.fileIds(), request.mode(), request.nativeTarget(),
                 userId, exchange);
     }
 
     private Flux<ServerSentEvent<String>> streamInternal(String sessionId, String userMessage,
-                                                         List<String> fileIds, String mode, Long userId,
+                                                         List<String> fileIds, String mode, String nativeTarget, Long userId,
                                                          ServerWebExchange exchange) {
         // ★ 日志不含问题正文：法律咨询内容属敏感个人信息，只记长度等元数据（P0 安全整改）
         log.info("收到聊天请求: sessionId={}, 问题长度={}, 附件数={}", sessionId,
@@ -145,13 +172,15 @@ public class ChatController {
         //   + subscribeOn（整段前置逻辑挪到弹性线程）；token 仍由 LLM 网络回调驱动，不长期占线程
         return Flux.defer(() -> {
             if (userMessage == null || userMessage.isBlank()) throw new IllegalArgumentException("问题不能为空");
-            if (mode != null && !List.of("qa", "review").contains(mode)) throw new IllegalArgumentException("附件处理模式无效");
+            if (mode != null && !List.of("qa", "review", "native").contains(mode)) throw new IllegalArgumentException("附件处理模式无效");
+            if ("native".equals(mode) && (nativeTarget == null || nativeTarget.isBlank()))
+                throw new IllegalArgumentException("请选择接收附件的直传模型");
             // 配额上下文（登录=u:{userId}+role；游客=ip:{ip} 共享池）
             QuotaService.QuotaCtx quotaCtx = quotaContext(userId, exchange);
             // 会话归属：登录按 userId，匿名按 X-Guest-Key 凭据；他人会话直接 403（不再有"无主会话"）
             SessionOwnershipService.Owner owner = ownershipService.resolve(exchange.getRequest().getHeaders(), userId);
             ownershipService.claim(sessionId, owner);
-            return chatService.chat(sessionId, userMessage, quotaCtx, fileIds, owner, "review".equals(mode));
+            return chatService.chat(sessionId, userMessage, quotaCtx, fileIds, owner, "review".equals(mode), "native".equals(mode) ? nativeTarget : null);
         }).subscribeOn(Schedulers.boundedElastic());
     }
 

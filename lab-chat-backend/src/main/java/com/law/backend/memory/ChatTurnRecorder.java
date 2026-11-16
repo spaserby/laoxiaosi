@@ -13,8 +13,19 @@ public final class ChatTurnRecorder {
     private com.fasterxml.jackson.databind.node.ObjectNode evidence = JSON.createObjectNode().put("version", 1);
     public ChatTurnRecorder(ConversationTurnService service) { this.service = service; }
     public void begin(String session, String owner, String question) {
+        begin(session, owner, question, java.util.List.of());
+    }
+    public void begin(String session, String owner, String question,
+                      java.util.List<com.law.backend.attachment.AttachmentRepository.FileRecord> files) {
         if (terminal.get() != null) throw new CancellationException();
-        turn.set(service.begin(session, owner, question));
+        if (files.isEmpty()) turn.set(service.begin(session, owner, question));
+        else {
+            var metadata = JSON.createObjectNode().put("version", 1);
+            var attachments = metadata.putArray("attachments");
+            for (var file : files) attachments.addObject().put("fileId", file.fileId()).put("name", file.name())
+                    .put("expiresAt", file.expiresAt()).put("extension", file.extension());
+            turn.set(service.begin(session, owner, question, metadata.toString()));
+        }
         if (terminal.get() != null) { persist(); throw new CancellationException(); }
     }
     public void append(String text) { answer.append(text); }

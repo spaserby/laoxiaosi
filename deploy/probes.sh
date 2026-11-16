@@ -52,6 +52,10 @@ fi
 # 私有附件接口无凭据必须拒绝，不能被静态站点 fallback 返回 HTML。
 code=$(curl $CURL_K -s -o /dev/null -w '%{http_code}' "$BASE/chat/files?sessionId=synthetic-probe")
 if [ "$code" = "403" ]; then ok attachment-auth-guard; else bad attachment-auth-guard "HTTP $code（期望403）"; fi
+code=$(curl $CURL_K -s -o /dev/null -w '%{http_code}' "$BASE/chat/files/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/original?sessionId=synthetic-probe")
+if [ "$code" = "403" ]; then ok original-auth-guard; else bad original-auth-guard "HTTP $code（期望403）"; fi
+first=$(curl $CURL_K -fsS "$BASE/chat/files/capabilities" 2>/dev/null | head -c 1)
+if [ "$first" = "[" ]; then ok direct-capabilities; else bad direct-capabilities "附件能力接口未返回 JSON 列表"; fi
 
 echo "---- probes: $pass passed, $fail failed ----"
 [ "$fail" -eq 0 ]

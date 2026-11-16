@@ -24,6 +24,8 @@ export const useChatStore = defineStore('chat', {
     messages: {},            // sessionId -> [{role, content, streaming?}]
     historyPages: {},        // sessionId -> {loaded, loading, hasMore, nextCursor, stale, error}
     attachmentsBySession: {},
+    draftAttachments: {},
+    uploadingAttachmentsFor: null,
     attachmentErrors: {},
     phase: 'idle',           // idle | streaming
     blankMode: false,        // 新建咨询后的干净页态（居中问候+居中输入框，非报纸首页）
@@ -35,6 +37,11 @@ export const useChatStore = defineStore('chat', {
     currentMessages: (s) => s.messages[s.currentSessionId] || [],
     currentHistoryPage: (s) => s.historyPages[s.currentSessionId] || {},
     currentAttachments: (s) => s.attachmentsBySession[s.currentSessionId] || [],
+    currentDraftAttachments: (s) => {
+      const draft = s.draftAttachments[s.currentSessionId] || []
+      const files = s.attachmentsBySession[s.currentSessionId] || []
+      return draft.map(item => ({ ...(files.find(f => f.fileId === item.fileId) || item), reused: item.reused }))
+    },
     currentTitle: (s) => {
       const cur = s.sessions.find(x => x.sessionId === s.currentSessionId)
       return cur ? cur.title : '新对话'
@@ -64,6 +71,8 @@ export const useChatStore = defineStore('chat', {
         const files = await listAttachments(sessionId)
         if (epoch !== this.identityEpoch) return
         const previous = this.attachmentsBySession[sessionId] || []
+        for (const file of previous)
+          if (file.url && !files.some(item => item.fileId === file.fileId)) URL.revokeObjectURL(file.url)
         this.attachmentsBySession[sessionId] = files.map(file => ({ ...file, url: previous.find(p => p.fileId === file.fileId)?.url || '' }))
         this.attachmentErrors[sessionId] = false
       } catch (error) { if (epoch === this.identityEpoch) this.attachmentErrors[sessionId] = true; throw error }
@@ -139,13 +148,14 @@ export const useChatStore = defineStore('chat', {
       delete this.messages[sessionId]
       delete this.historyPages[sessionId]
       delete this.attachmentsBySession[sessionId]
+      delete this.draftAttachments[sessionId]
       delete this.attachmentErrors[sessionId]
       if (this.currentSessionId === sessionId) this.currentSessionId = null
       await this.loadSessions()
     },
 
     /** 发送消息：建会话（首轮）→ 推本地消息 → 开 SSE 流 */
-    send(text, files, mode = 'qa') {
+    send(text, files, mode = 'qa', nativeTarget) {
       if (!text || !text.trim() || this.isStreaming || this.currentHistoryPage.loading) return
       this.blankMode = false
       const sid = this.currentSessionId || this.createSessionId(text)
@@ -159,9 +169,10 @@ export const useChatStore = defineStore('chat', {
         session.title = Array.from(text.trim()).slice(0, 20).join('')
       }
       const userMsg = { role: 'user', content: text }
+      const draft = this.draftAttachments[sid] || []
       // 附件卡数据（消息泡展示文件名/字数）
       if (files && files.length) {
-        userMsg.attachments = files.map(f => ({ fileId: f.fileId, name: f.name, chars: f.chars, truncated: f.truncated, kind: f.kind, url: f.url || '', imageCount: (f.images || []).length }))
+        userMsg.attachments = files.map(({ fileId, name, extension, expiresAt, url }) => ({ fileId, name, extension, expiresAt, url }))
       }
       msgs.push(userMsg)
       msgs.push({
@@ -169,6 +180,7 @@ export const useChatStore = defineStore('chat', {
         stage: '', reasoning: '',          // 思考面板数据（阶段进度 + 模型真实推理流）
         startTs: Date.now(), firstTokenTs: 0, thinkSeconds: 0
       })
+      const sentQuestion = msgs[msgs.length - 2]
       // 取响应式代理引用（而非 raw 对象）——事件回调里改 raw 不触发视图，
       // 会导致思考内容/正文"结束后才一次性显示"；代理引用保证逐 chunk 实时渲染
       const assistant = msgs[msgs.length - 1]
@@ -178,7 +190,7 @@ export const useChatStore = defineStore('chat', {
       // 原先 token 与 userMessage 都拼在 URL 上，而 URL 会进 nginx/代理访问日志（P0 安全整改）。
       const es = markRaw(new SseClient('/chat/stream', {
         headers: sessionHeaders(),
-        body: { sessionId: sid, userMessage: text, fileIds: (files || []).map((f) => f.fileId), mode }
+        body: { sessionId: sid, userMessage: text, fileIds: (files || []).map((f) => f.fileId), mode, nativeTarget }
       }))
       this.es = es
       const epoch = this.identityEpoch
@@ -267,7 +279,8 @@ export const useChatStore = defineStore('chat', {
         }
         // 整数组替换（而非 splice）：替换 state 键引用确保列表渲染必定刷新，
         // 避免占位气泡在配额拒绝后残留"思考中"
-        this.messages[sid] = msgs.filter(m => m !== assistant)
+        this.messages[sid] = msgs.filter(m => m !== assistant && m !== sentQuestion)
+        this.draftAttachments[sid] = draft
         discardPending()   // 占位消息已移除，排空缓冲一并丢弃防定时器泄漏
         this.finish(sid)
       })
@@ -314,6 +327,8 @@ export const useChatStore = defineStore('chat', {
         }
         this.finish(sid)
       })
+      this.draftAttachments[sid] = []
+      return true
     },
 
     /** 停止生成：关 SSE + 通知后端取消（双中断）；排空缓冲丢弃（停止即冻结画面） */

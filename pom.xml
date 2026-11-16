@@ -32,6 +32,7 @@
 
     <!-- 统一版本号管理：所有依赖版本集中在此声明，子模块引用不写 version -->
     <properties>
+        <poi.version>5.5.1</poi.version>
         <java.version>17</java.version>
         <maven.compiler.source>17</maven.compiler.source>
         <maven.compiler.target>17</maven.compiler.target>
@@ -105,7 +106,12 @@
         <dependency>
             <groupId>org.apache.poi</groupId>
             <artifactId>poi-ooxml</artifactId>
-            <version>5.2.5</version>
+            <version>${poi.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.poi</groupId>
+            <artifactId>poi-scratchpad</artifactId>
+            <version>${poi.version}</version>
         </dependency>
         <dependency>
             <groupId>io.jsonwebtoken</groupId>

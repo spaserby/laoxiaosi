@@ -21,6 +21,10 @@ public interface MessageMapper {
     int insertAssistant(@Param("sessionId") String sessionId, @Param("content") String content,
                         @Param("turnId") String turnId, @Param("status") String status, @Param("evidence") String evidence);
 
+    @Insert("insert into chat_message(session_id,role,content,turn_id,status,evidence) values(#{sessionId},'USER',#{content},#{turnId},'RUNNING',#{evidence})")
+    int insertUser(@Param("sessionId") String sessionId, @Param("content") String content,
+                   @Param("turnId") String turnId, @Param("evidence") String evidence);
+
     @Select("select exists(select 1 from chat_message where session_id=#{sessionId} and status='RUNNING')")
     boolean hasRunning(String sessionId);
 

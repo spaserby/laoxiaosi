@@ -6,6 +6,8 @@ import org.apache.pdfbox.Loader;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.rendering.PDFRenderer;
 import org.apache.pdfbox.text.PDFTextStripper;
+import org.apache.poi.hwpf.HWPFDocument;
+import org.apache.poi.poifs.filesystem.POIFSFileSystem;
 import org.apache.poi.xwpf.usermodel.*;
 import org.springframework.stereotype.Component;
 
@@ -18,7 +20,10 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
+import java.util.zip.ZipFile;
 
 /** 有界完整解析。拒绝超限文档；单页失败显式计入覆盖率，绝不冒充全文成功。 */
 @Component
@@ -51,6 +56,16 @@ public class AttachmentParser {
                 }
                 yield a.result(1, 1, List.of(), "text");
             }
+            case "doc" -> {
+                try (var input = Files.newInputStream(path); var document = new HWPFDocument(input)) {
+                    var range = document.getRange();
+                    for (int i = 0; i < range.numParagraphs(); i++) {
+                        a.append(range.getParagraph(i).text().replace('\u0007', '\t'), "DOC 第" + (i + 1) + "段");
+                    }
+                }
+                a.warn("旧版 Word 仅提取正文和表格文字，图表、布局及其他内容需核对原件");
+                yield a.result(1, 1, List.of(), "text");
+            }
             case "pdf" -> pdf(path, a);
             case "png", "jpg", "jpeg", "webp" -> {
                 validateImage(path);
@@ -71,6 +86,39 @@ public class AttachmentParser {
             }
             default -> throw new IllegalArgumentException("不支持的附件格式");
         };
+    }
+
+    /** 直传只校验格式和基本限额，不提取文本、渲染页面或执行 OCR。 */
+    public int validateOriginal(Path path, String extension) {
+        try {
+            switch (extension) {
+                case "pdf" -> {
+                    try (var document = Loader.loadPDF(path.toFile())) {
+                        int pages = document.getNumberOfPages();
+                        if (document.isEncrypted() || pages < 1) throw new IllegalArgumentException("请上传有内容且未加密的 PDF");
+                        if (pages > properties.getMaxPages()) throw new IllegalArgumentException("PDF 超过 " + properties.getMaxPages() + " 页，请拆分上传");
+                        return pages;
+                    }
+                }
+                case "doc" -> {
+                    try (var fs = new POIFSFileSystem(path.toFile(), true)) {
+                        if (!fs.getRoot().hasEntry("WordDocument")) throw new IllegalArgumentException("请上传有效的 Word .doc 文件");
+                    }
+                }
+                case "docx" -> {
+                    try (var zip = new ZipFile(path.toFile())) {
+                        var entries = new HashSet<String>();
+                        if (zip.getEntry("word/document.xml") == null || zip.stream().anyMatch(entry -> !entries.add(entry.getName())))
+                            throw new IllegalArgumentException("请上传有效且未加密的 .docx 文件");
+                    }
+                }
+                case "png", "jpg", "jpeg", "webp" -> validateImage(Files.readAllBytes(path), extension);
+                default -> throw new IllegalArgumentException("此文件格式暂不支持原件直传");
+            }
+            return 0;
+        } catch (java.io.IOException e) {
+            throw new IllegalArgumentException("附件格式无效、已加密或原件不可用");
+        }
     }
 
     private void body(List<IBodyElement> elements, Accumulator a, String path) throws Exception {
@@ -166,17 +214,21 @@ public class AttachmentParser {
         }
     }
     private void validateImage(Path path) throws Exception { validateImage(Files.readAllBytes(path)); }
-    private void validateImage(byte[] bytes) throws Exception {
+    private void validateImage(byte[] bytes) throws java.io.IOException { validateImage(bytes, null); }
+    private void validateImage(byte[] bytes, String extension) throws java.io.IOException {
         if (bytes.length > properties.getMaxImageBytes()) throw new IllegalArgumentException("图片超过大小限制");
         try (var stream = ImageIO.createImageInputStream(new ByteArrayInputStream(bytes))) {
             var readers = ImageIO.getImageReaders(stream);
             if (!readers.hasNext()) {
                 int[] dimensions = webpDimensions(bytes);
-                if (dimensions == null) throw new IllegalArgumentException("图片无法安全解码，请转为 PNG 或 JPEG");
+                if (dimensions == null || (extension != null && !extension.equals("webp"))) throw new IllegalArgumentException("图片格式无效或与扩展名不符");
                 checkPixels(dimensions[0], dimensions[1]); return;
             }
             var reader = readers.next();
             try {
+                String expected = "jpg".equals(extension) ? "jpeg" : extension;
+                if (expected != null && !expected.equals(reader.getFormatName().toLowerCase(Locale.ROOT)))
+                    throw new IllegalArgumentException("图片内容与扩展名不符");
                 reader.setInput(stream);
                 checkPixels(reader.getWidth(0), reader.getHeight(0));
             } finally { reader.dispose(); }

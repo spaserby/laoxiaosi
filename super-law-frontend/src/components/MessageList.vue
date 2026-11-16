@@ -5,19 +5,90 @@
  * 用户自行下滑阅读；仅在发送新提问时把新问题定位到视口顶部（首屏即见回答开头），
  * 打开/切换会话时滚到最新内容。
  */
-import { watch, nextTick, onMounted } from 'vue'
-import { FileText } from 'lucide-vue-next'
+import { ref, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
+import { Download, FileText, Trash2 } from 'lucide-vue-next'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { useChatStore } from '../stores/chat'
+import { deleteAttachment, downloadOriginal } from '../api/session'
 import AssistantBubble from './AssistantBubble.vue'
 
 const store = useChatStore()
 let scroller = null
 let loadingOlder = false
+const now = ref(Date.now())
+let clock
 
 onMounted(() => {
   scroller = document.querySelector('.page-scroll')
+  clock = setInterval(() => { now.value = Date.now() }, 15000)
   scrollBottom()
 })
+onBeforeUnmount(() => clearInterval(clock))
+
+function originalAvailable(file) {
+  const saved = store.attachmentsBySession[store.currentSessionId]
+  return file.expiresAt > now.value && (!saved || saved.some(item => item.fileId === file.fileId))
+}
+
+async function saveOriginal(file) {
+  const sid = store.currentSessionId
+  const epoch = store.identityEpoch
+  try {
+    const blob = await downloadOriginal(sid, file.fileId)
+    if (epoch !== store.identityEpoch || sid !== store.currentSessionId) return
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = file.name
+    link.click()
+    setTimeout(() => URL.revokeObjectURL(url), 1000)
+  } catch (error) {
+    if (epoch !== store.identityEpoch || sid !== store.currentSessionId) return
+    ElMessage.error(error.response?.status === 403 ? '原件已过期、被移除或当前身份无下载权限' : '下载失败，请稍后重试')
+  }
+}
+
+async function reuse(file) {
+  const sid = store.currentSessionId
+  const epoch = store.identityEpoch
+  try {
+    await store.refreshAttachments(sid)
+    if (sid !== store.currentSessionId || epoch !== store.identityEpoch || store.isStreaming || store.uploadingAttachmentsFor === sid) return
+    const original = store.currentAttachments.find(item => item.fileId === file.fileId && item.expiresAt > Date.now())
+    if (!original) { ElMessage.warning('原件已过期或被移除，请重新上传'); return }
+    const draft = store.draftAttachments[sid] || []
+    if (draft.some(item => item.fileId === file.fileId)) return
+    if (draft.length >= 3) { ElMessage.warning('单次咨询最多 3 个附件'); return }
+    store.draftAttachments[sid] = [...draft, { ...original, reused: true }]
+    document.getElementById('input')?.focus()
+  } catch {
+    if (epoch === store.identityEpoch && sid === store.currentSessionId) ElMessage.error('读取附件状态失败，请稍后重试')
+  }
+}
+
+async function removeOriginal(file) {
+  const sid = store.currentSessionId
+  const epoch = store.identityEpoch
+  try {
+    await ElMessageBox.confirm(`删除「${file.name}」及其解析内容？已有问答会保留，之后无法下载或再次使用原件。`, '删除原件', {
+      confirmButtonText: '删除', cancelButtonText: '取消', type: 'warning'
+    })
+  } catch { return }
+  if (sid !== store.currentSessionId || epoch !== store.identityEpoch || store.isStreaming) return
+  try {
+    await deleteAttachment(sid, file.fileId)
+    if (epoch !== store.identityEpoch) return
+    const saved = store.attachmentsBySession[sid]
+    const url = saved?.find(item => item.fileId === file.fileId)?.url
+    if (url) URL.revokeObjectURL(url)
+    if (saved) store.attachmentsBySession[sid] = saved.filter(item => item.fileId !== file.fileId)
+    else await store.refreshAttachments(sid)
+    if (epoch !== store.identityEpoch) return
+    store.draftAttachments[sid] = (store.draftAttachments[sid] || []).filter(item => item.fileId !== file.fileId)
+  } catch {
+    if (epoch === store.identityEpoch && sid === store.currentSessionId) ElMessage.error('原件删除失败，请刷新后重试')
+  }
+}
 
 // 只在"会话/消息条数"变化时定位（新提问置顶、切会话滚底）；
 // token 流的持续更新不触发滚动——生成期间页面保持静止，由用户手动下滑
@@ -82,12 +153,17 @@ function scrollBottom() {
       <AssistantBubble v-if="m.role === 'assistant'" :message="m" />
       <div v-else-if="m.role === 'user'" class="msg-user">
         <span class="mu-l">咨询请求</span>
-        <!-- 附件卡行（文件名+字数，与输入侧 chips 同源） -->
         <div v-if="m.attachments && m.attachments.length" class="mu-files">
           <span v-for="a in m.attachments" :key="a.fileId" class="mu-file">
-            <img v-if="a.url" :src="a.url" class="mu-thumb" alt="附件缩略图" />
+            <img v-if="a.url && originalAvailable(a)" :src="a.url" class="mu-thumb" alt="附件缩略图" />
             <FileText v-else :size="11" />
-            {{ a.name }}<template v-if="a.imageCount"> · {{ a.imageCount }} 图</template><template v-else-if="a.chars"> · {{ a.chars }} 字</template>{{ a.truncated ? '（已截取）' : '' }}
+            <span class="mu-filename">{{ a.name }}</span>
+            <template v-if="originalAvailable(a)">
+              <button type="button" title="下载原件" :aria-label="`下载原件 ${a.name}`" @click="saveOriginal(a)"><Download :size="13" /></button>
+              <button type="button" :disabled="store.isStreaming || store.uploadingAttachmentsFor === store.currentSessionId" @click="reuse(a)">用于下一条</button>
+              <button type="button" :disabled="store.isStreaming" title="删除原件" :aria-label="`删除原件 ${a.name}`" @click="removeOriginal(a)"><Trash2 :size="12" /></button>
+            </template>
+            <span v-else-if="a.expiresAt">{{ a.expiresAt <= now ? '原件已过期' : '原件不可用' }}</span>
           </span>
         </div>
         {{ m.content }}
@@ -124,5 +200,9 @@ function scrollBottom() {
   border: 1px solid rgba(242, 243, 245, .35); padding: 3px 8px; color: rgba(242, 243, 245, .85);
 }
 .mu-thumb { width: 22px; height: 22px; object-fit: cover; border: 1px solid rgba(242,243,245,.4); }
+.mu-file button { color: inherit; padding: 2px 4px; flex-shrink: 0; }
+.mu-file button:hover:not(:disabled) { color: white; text-decoration: underline; }
+.mu-file button:disabled { opacity: .5; }
+.mu-filename { overflow-wrap: anywhere; min-width: 0; }
 @keyframes up { from { opacity: 0; transform: translateY(18px); } to { opacity: 1; transform: none; } }
 </style>

@@ -127,6 +127,9 @@ legal:
           base-url: https://api.deepseek.com
           api-key: ${DEEPSEEK_API_KEY:}
           temperature: 0.7
+        openai:
+          base-url: https://api.openai.com
+          api-key: ${OPENAI_API_KEY:}
         qwen:
           base-url: https://api.deepseek.com
           api-key: ${AI_API_KEY:}
@@ -257,6 +260,26 @@ legal:
       max-file-bytes: ${ATTACHMENT_MAX_FILE_BYTES:20971520}
       max-image-bytes: ${ATTACHMENT_MAX_IMAGE_BYTES:8388608}
       max-text-chars: ${ATTACHMENT_MAX_TEXT_CHARS:200000}
+      max-private-storage-bytes: ${ATTACHMENT_MAX_PRIVATE_STORAGE_BYTES:536870912}
+      max-concurrent-uploads: ${ATTACHMENT_MAX_CONCURRENT_UPLOADS:4}
+      native:
+        targets:
+          deepseek-files:
+            enabled: ${ATTACHMENT_DEEPSEEK_DIRECT_ENABLED:false}
+            protocol: deepseek-files
+            provider: deepseek
+            label: DeepSeek
+            model: ${ATTACHMENT_DEEPSEEK_DIRECT_MODEL:deepseek-flash}
+            max-bytes: 20971520
+            max-pdf-pages: 30
+          openai-responses:
+            enabled: ${ATTACHMENT_OPENAI_DIRECT_ENABLED:false}
+            protocol: openai-responses
+            provider: openai
+            label: OpenAI
+            model: ${ATTACHMENT_OPENAI_DIRECT_MODEL:gpt-4.1-mini}
+            max-bytes: 8388608
+            max-pdf-pages: 20
       queue-capacity: 6          # 单解析线程 + 有界队列，适配小内存服务器
       processing-timeout-seconds: 180
       ttl-hours: 24

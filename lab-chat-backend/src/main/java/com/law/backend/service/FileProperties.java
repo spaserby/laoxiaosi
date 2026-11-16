@@ -28,7 +28,10 @@ public class FileProperties {
     private long maxImageBytes = 8L * 1024 * 1024;
     private int maxImagePixels = 16_000_000;
     private int maxTextChars = 200_000;
-    private int maxFilesPerSession = 3;
+    private int maxFilesPerTurn = 3;
+    private int maxFilesPerSession = 12;
+    private long maxPrivateStorageBytes = 512L * 1024 * 1024;
+    private int maxConcurrentUploads = 4;
     private int queueCapacity = 6;
     private int processingTimeoutSeconds = 180;
     private int ttlHours = 24;

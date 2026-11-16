@@ -16,10 +16,15 @@ public class ConversationTurnService {
     public record Turn(String sessionId, String ownerKey, String turnId) {}
     @Transactional
     public Turn begin(String sessionId, String ownerKey, String question) {
+        return begin(sessionId, ownerKey, question, null);
+    }
+    @Transactional
+    public Turn begin(String sessionId, String ownerKey, String question, String evidence) {
         if (!ownerKey.equals(messages.lockSession(sessionId))) throw new SessionAccessDeniedException();
         if (messages.hasRunning(sessionId)) throw new IllegalArgumentException("该会话仍在生成，请等待结束或新建咨询");
         Turn turn = new Turn(sessionId, ownerKey, UUID.randomUUID().toString());
-        messages.insertTurn(sessionId, "USER", question, turn.turnId(), "RUNNING");
+        if (evidence == null) messages.insertTurn(sessionId, "USER", question, turn.turnId(), "RUNNING");
+        else messages.insertUser(sessionId, question, turn.turnId(), evidence);
         summaries.ensure(sessionId);
         return turn;
     }

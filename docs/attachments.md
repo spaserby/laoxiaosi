@@ -1,13 +1,16 @@
 # 会话附件
 
-上传原件流式写入私有目录，单线程解析后，正文、结构化父子块和向量在同一事务发布到独立附件表。
+上传原件流式写入私有目录。发送时选择相关片段问答、逐章全文审查或原件直传。一条消息可同时携带文档和图片。
+选择片段问答或逐章审查后，单线程解析，正文、结构化父子块和向量在同一事务发布到独立附件表。
 公共法条表与向量表不变。队列在进程内有界；进程中断后的任务会显示失败并允许重试，不宣称可靠消息队列。
 
 ## 行为
 
-- 支持 TXT/MD/PDF/DOCX 和 PNG/JPEG/WebP。DOCX 按正文顺序读取段落、表格，附带页眉页脚、脚注尾注。
+- 支持 TXT、Markdown、PDF、DOC、DOCX 和 PNG/JPEG/WebP。DOCX 按正文顺序读取段落、表格，附带页眉页脚、脚注尾注。
+  旧版 DOC 在片段问答或逐章审查中提取正文与表格文字，并提示核对原件中的图表和布局。
 - PDF 逐页提取文字；文字稀少且含图的页渲染后做完整文字转录。OCR 是独立调用，短 caption 不参与 OCR。
-- 接受上限默认文档20MB、图片8MB/1600万像素、PDF200页、正文20万字符、每会话3个附件。
+- 接受上限默认文档 20 MiB、图片 8 MiB / 1600 万像素、PDF 200 页、正文 20 万字符。每轮最多 3 个附件，每会话最多保留 12 个有效原件。
+  单实例默认最多同时接收 4 个上传，私有原件合计最多 512 MiB。上传开始时预留该格式的单文件额度。
   超限明确拒绝并提示拆分；不会以截取前2万字或前30页冒充成功。
 - 解析/OCR 缺页或图表未转录时状态为 `PARTIAL`，显示失败页和处理提示。OCR 与图像理解均须核对原件。
   复杂版式、公式、文字框与非正文修订等格式不保证保真；不得将程序覆盖率视为识别准确率或法律风险检出率。
@@ -20,34 +23,57 @@
 - 全局预算计算系统规则、法条、历史、问题、附件、图片及输出余量。全部附件共用8000 token初始额度。
   最新完整对话优先；超限明确拒绝，不静默丢弃附件尾部。附件轮使用无工具客户端，防止后续工具结果绕过预算。
 
+## 原件直传
+
+在私有环境配置启用 `ATTACHMENT_DEEPSEEK_DIRECT_ENABLED=true` 或 `ATTACHMENT_OPENAI_DIRECT_ENABLED=true`，并提供相应的 API Key。
+`application.yml` 的 `legal.ai.files.native.targets` 指向 `legal.ai.model.providers` 中的端点，并配置模型和每轮文件限额。默认关闭。
+前端显示兼容的接收方，用户选择「原件直传」后，一次发送所选原件和本轮问题。法条仍由现有检索流程提供。
+直传跳过应用内的附件 OCR、切块和向量化。供应商会按自己的协议解析，页面提示用户核对原件。
+
+| 协议 | 原件处理 | 默认每轮限额 |
+| --- | --- | --- |
+| DeepSeek Files | PDF、DOC、DOCX 使用版面识别，图片作为图像输入。文件设置 1 小时过期，调用结束尝试删除 | 20 MiB，PDF 合计 30 页 |
+| OpenAI Responses | 文件和图片随请求发送，设定 `store: false`。PDF 可读取页面图像，Word 文档按文本提取 | 8 MiB，PDF 合计 20 页 |
+
+用户选择的接收方仅用于当前一轮。供应商拒绝、失败或超时时显示错误，由用户重新选择模式或接收方。
+直传使用本轮问题和所选原件，追问时请写明要核对的事项。接收方配置有变化时，刷新页面后重新选择。
+供应商的数据处理和留存仍适用各自的政策。建议用合成资料确认账号支持的模型、版式识别效果和费用后启用。
+
+[DeepSeek 文件解析](https://api-docs.deepseek.com/guides/document_parsing/) · [OpenAI 文件输入](https://developers.openai.com/api/docs/guides/file-inputs) · [OpenAI 数据控制](https://developers.openai.com/api/docs/guides/your-data)
+
 ## 身份和期限
 
-所有接口必须带登录 `Authorization` 或匿名 `X-Guest-Key`；附件同时绑定 `owner_key`、`session_id` 和有效期。
-读取、来源、重试、删除、检索都使用相同的 SQL 过滤，数据库过滤失败不能去掉条件重试。
+列出状态、上传、下载和其他附件操作须带登录 `Authorization` 或匿名 `X-Guest-Key`。附件同时绑定 `owner_key`、`session_id` 和有效期。
+读取、下载、来源、重试、删除、检索都使用相同的 SQL 过滤，数据库过滤失败不能去掉条件重试。
 同一浏览器匿名转登录须同时持有原游客凭据，且会话归属已升级，才能迁移附件归属；旧游客身份立即不能读取。
 
 原件名不参与磁盘路径，目录不映射 Web 静态资源。默认24小时到期，逻辑访问立即拒绝；后台每分钟回收原件、全文、块与向量。
 删除会话也会删除附件。回收失败会重试，因此物理删除可能延后；数据库和私有卷的备份需另行设置保留策略。
-后续轮即使没有重新携带 fileIds，也会检索同一会话的有效附件。已知无效或未就绪附件不能被静默跳过。
+发送后，附件作为卡片显示在本轮用户消息下，刷新历史也可以下载。有需要时可删除原件，已有问答继续保留。
+有效期内点「用于下一条」即可在同会话重新选用。
+原件从应用的私有卷提供，切换模型端点不会改变下载地址或有效期。旧消息没有已保存的附件关联，历史页仅对新绑定的附件显示卡片。
 
 ## 接口
 
 | 请求 | 用途 |
 | --- | --- |
-| `POST /chat/files?sessionId=...` multipart `files` | 返回 `QUEUED` 元数据，最多3个 |
+| `POST /chat/files?sessionId=...&deferProcessing=true` multipart `files` | 返回 `STORED` 元数据，最多 3 个。省略 `deferProcessing` 则按旧流程立即排队 |
+| `GET /chat/files/capabilities` | 查询启用的直传接收方及限额 |
 | `GET /chat/files?sessionId=...` | 查询会话附件及处理状态 |
 | `POST /chat/files/{id}/retry?sessionId=...` | 重试失败、部分解析或向量化失败附件，不更改有效期 |
 | `DELETE /chat/files/{id}?sessionId=...` | 立即使附件不可读并回收 |
 | `GET /chat/files/{id}/source?sessionId=...&parentId=...` | 查询受鉴权的引用原文 |
-| `POST /chat/stream` | JSON中增加 `mode: "qa" / "review"`，默认 `qa` |
+| `GET /chat/files/{id}/original?sessionId=...` | 下载受鉴权的原始文件 |
+| `POST /chat/stream` | `mode` 支持 `qa`、`review`、`native`。直传须提供能力查询返回的接收方 `id` 作为 `nativeTarget`，并明确提供 `fileIds` |
 
-状态为 `QUEUED → PROCESSING → READY/PARTIAL/FAILED`；文件列表不返回过期记录。
+状态为 `STORED → QUEUED → PROCESSING → READY/PARTIAL/FAILED`。直传可直接使用 `STORED` 原件，文件列表只返回有效附件。
+前端始终传 `fileIds`，空数组表示本轮为纯文字。旧客户端省略该字段时沿用会话级附件行为。
 SSE 的 `attachment` 事件包含 `sources`、`warnings`、`selectedSections`、`totalSections`、`fullCoverage`，不传全文。
-前端把附件留在所属会话，轮询异步处理；状态不可用或未就绪时禁止发送。原文预览使用纯文本，不能执行附件 HTML。
+原文片段在预览中按纯文本显示。
 
 ## 升级与验收
 
-先运行 [迁移03](../scripts/migration-03-private-attachments.sql)，挂载 Compose 私有卷后重建应用，详见 [迁移说明](../deploy/migrate.md)。
+已部署附件和会话历史表的环境直接重建应用即可。初次部署运行 [迁移03](../scripts/migration-03-private-attachments.sql) 和会话历史相关迁移，详见 [迁移说明](../deploy/migrate.md)。
 旧 Redis 附件没有可信归属，需重新上传。解析器、分块器、embedding版本写入元数据；更换 embedding 时同步版本并重试旧附件。
 默认单后端实例；多实例需共享私有文件存储，并替换进程内任务队列及实例内审查并发限制。
 
