@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { markRaw } from 'vue'
-import { listSessions, getSessionMessages, deleteSession, stopChat, listAttachments } from '../api/session'
+import { listSessions, getSessionMessages, deleteSession, stopChat, listAttachments, getAttachmentPolicy } from '../api/session'
 import { SseClient } from '../utils/sse'
 import { sessionHeaders } from '../utils/guest'
 import { useUserStore } from './user'
@@ -25,8 +25,11 @@ export const useChatStore = defineStore('chat', {
     historyPages: {},        // sessionId -> {loaded, loading, hasMore, nextCursor, stale, error}
     attachmentsBySession: {},
     draftAttachments: {},
+    draftText: {},
+    attachmentPolicy: null,
+    attachmentPolicyLoading: false,
+    attachmentPolicyNotice: '',
     uploadingAttachmentsFor: null,
-    attachmentErrors: {},
     phase: 'idle',           // idle | streaming
     blankMode: false,        // 新建咨询后的干净页态（居中问候+居中输入框，非报纸首页）
     quotaDeny: null,         // 配额拒绝事件（{code,message,tier,remaining,resetAt}），ChatView 弹引导
@@ -60,22 +63,45 @@ export const useChatStore = defineStore('chat', {
       this._drain = null
       this.identityEpoch = epoch
     },
-    ensureSession() {
-      if (!this.currentSessionId) this.currentSessionId = this.createSessionId('新对话')
+    ensureSession(firstMessage = '新对话') {
+      if (!this.currentSessionId) {
+        const sid = this.createSessionId(firstMessage)
+        this.draftText[sid] = this.draftText[''] || ''
+        delete this.draftText['']
+        this.currentSessionId = sid
+      }
       return this.currentSessionId
+    },
+    async refreshAttachmentPolicy() {
+      const epoch = this.identityEpoch
+      const request = Symbol()
+      this._attachmentPolicyRequest = request
+      const current = () => epoch === this.identityEpoch && this._attachmentPolicyRequest === request
+      this.attachmentPolicyLoading = true
+      try {
+        const policy = await getAttachmentPolicy()
+        if (current()) this.attachmentPolicy = policy
+      } catch {
+        if (current()) this.attachmentPolicy = null
+      } finally {
+        if (current()) this.attachmentPolicyLoading = false
+      }
+      return this.attachmentPolicy
+    },
+    async refreshChangedAttachmentPolicy() {
+      this.attachmentPolicy = null
+      this.attachmentPolicyNotice = '附件处理设置已更新，请查看提示后再次发送。'
+      await this.refreshAttachmentPolicy()
     },
     async refreshAttachments(sessionId = this.currentSessionId) {
       if (!sessionId) return
       const epoch = this.identityEpoch
-      try {
-        const files = await listAttachments(sessionId)
-        if (epoch !== this.identityEpoch) return
-        const previous = this.attachmentsBySession[sessionId] || []
-        for (const file of previous)
-          if (file.url && !files.some(item => item.fileId === file.fileId)) URL.revokeObjectURL(file.url)
-        this.attachmentsBySession[sessionId] = files.map(file => ({ ...file, url: previous.find(p => p.fileId === file.fileId)?.url || '' }))
-        this.attachmentErrors[sessionId] = false
-      } catch (error) { if (epoch === this.identityEpoch) this.attachmentErrors[sessionId] = true; throw error }
+      const files = await listAttachments(sessionId)
+      if (epoch !== this.identityEpoch) return
+      const previous = this.attachmentsBySession[sessionId] || []
+      for (const file of previous)
+        if (file.url && !files.some(item => item.fileId === file.fileId)) URL.revokeObjectURL(file.url)
+      this.attachmentsBySession[sessionId] = files.map(file => ({ ...file, url: previous.find(p => p.fileId === file.fileId)?.url || '' }))
     },
     /** 拉取会话列表（侧栏） */
     async loadSessions() {
@@ -149,17 +175,16 @@ export const useChatStore = defineStore('chat', {
       delete this.historyPages[sessionId]
       delete this.attachmentsBySession[sessionId]
       delete this.draftAttachments[sessionId]
-      delete this.attachmentErrors[sessionId]
+      delete this.draftText[sessionId]
       if (this.currentSessionId === sessionId) this.currentSessionId = null
       await this.loadSessions()
     },
 
     /** 发送消息：建会话（首轮）→ 推本地消息 → 开 SSE 流 */
-    send(text, files, mode = 'qa', nativeTarget) {
+    send(text, files = [], attachmentPolicyVersion) {
       if (!text || !text.trim() || this.isStreaming || this.currentHistoryPage.loading) return
       this.blankMode = false
-      const sid = this.currentSessionId || this.createSessionId(text)
-      this.currentSessionId = sid
+      const sid = this.ensureSession(text)
       // 先赋值、再从 state 重读：赋值表达式返回的是原始数组，直接使用会绕过响应式代理——
       // 后续 push/属性写入不触发重渲染（首轮流式"结束时才一次性显示"的根因）
       if (!this.messages[sid]) this.messages[sid] = []
@@ -169,9 +194,12 @@ export const useChatStore = defineStore('chat', {
         session.title = Array.from(text.trim()).slice(0, 20).join('')
       }
       const userMsg = { role: 'user', content: text }
-      const draft = this.draftAttachments[sid] || []
+      const draft = this.draftAttachments[sid] || files
+      const draftQuestion = this.draftText[sid] || ''
+      const sentTypedQuestion = draftQuestion.trim() === text
+      const hasAttachments = files.length > 0
       // 附件卡数据（消息泡展示文件名/字数）
-      if (files && files.length) {
+      if (hasAttachments) {
         userMsg.attachments = files.map(({ fileId, name, extension, expiresAt, url }) => ({ fileId, name, extension, expiresAt, url }))
       }
       msgs.push(userMsg)
@@ -190,13 +218,18 @@ export const useChatStore = defineStore('chat', {
       // 原先 token 与 userMessage 都拼在 URL 上，而 URL 会进 nginx/代理访问日志（P0 安全整改）。
       const es = markRaw(new SseClient('/chat/stream', {
         headers: sessionHeaders(),
-        body: { sessionId: sid, userMessage: text, fileIds: (files || []).map((f) => f.fileId), mode, nativeTarget }
+        body: { sessionId: sid, userMessage: text, fileIds: files.map(f => f.fileId),
+          ...(hasAttachments && { attachmentPolicyVersion }) }
       }))
       this.es = es
       const epoch = this.identityEpoch
       const listen = (type, handler) => es.addEventListener(type, event => {
         if (epoch === this.identityEpoch && this.es === es) handler(event)
       })
+      const restoreDraft = (keepOriginal) => {
+        if (sentTypedQuestion && !this.draftText[sid]) this.draftText[sid] = draftQuestion
+        if (hasAttachments) this.draftAttachments[sid] = keepOriginal ? draft.map(file => ({ ...file, reused: true })) : draft
+      }
 
       // SSE data 已 JSON 编码（防前导空格被 SSE 协议剥离）；解析失败降级用原文
       const parseSse = (data) => { try { return JSON.parse(data) } catch { return data } }
@@ -280,7 +313,7 @@ export const useChatStore = defineStore('chat', {
         // 整数组替换（而非 splice）：替换 state 键引用确保列表渲染必定刷新，
         // 避免占位气泡在配额拒绝后残留"思考中"
         this.messages[sid] = msgs.filter(m => m !== assistant && m !== sentQuestion)
-        this.draftAttachments[sid] = draft
+        restoreDraft(false)
         discardPending()   // 占位消息已移除，排空缓冲一并丢弃防定时器泄漏
         this.finish(sid)
       })
@@ -311,6 +344,14 @@ export const useChatStore = defineStore('chat', {
         const obj = raw && typeof raw === 'object' ? raw : null
         const status = (obj && obj.status) ?? (e && e.status)
         const msg = (typeof raw === 'string' ? raw : obj && obj.message) || ''
+        if (hasAttachments && status === 409) {
+          restoreDraft(false)
+          this.messages[sid] = msgs.filter(m => m !== assistant && m !== sentQuestion)
+          this.finish(sid)
+          this.refreshChangedAttachmentPolicy()
+          return
+        }
+        if (hasAttachments) restoreDraft(!status)
         if (status === 401 || status === 403) {
           assistant.content += `\n\n[无权访问] ${msg || '该会话不属于当前身份'}。请新建咨询后重试；若登录已过期，请重新登录。`
           // 身份自愈：无效 token 会被后端静默按游客处理 → 归属冲突 403，而侧栏仍显示"已登录"。
@@ -327,7 +368,11 @@ export const useChatStore = defineStore('chat', {
         }
         this.finish(sid)
       })
-      this.draftAttachments[sid] = []
+      if (hasAttachments) {
+        this.draftAttachments[sid] = []
+        this.attachmentPolicyNotice = ''
+      }
+      if (sentTypedQuestion) delete this.draftText[sid]
       return true
     },
 

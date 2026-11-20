@@ -8,7 +8,7 @@ import { useRouter, useRoute } from 'vue-router'
 import { useChatStore } from '../stores/chat'
 import { useUserStore } from '../stores/user'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Scale, ChevronLeft, Plus, MessageSquare, Calculator, Library, Clock, User, Settings } from 'lucide-vue-next'
+import { Scale, ChevronLeft, Plus, MessageSquare, ScanLine, Calculator, Library, Clock, User, Settings } from 'lucide-vue-next'
 import { syncVectors, syncStatus, syncScope } from '../api/auth'
 import { useDrawer } from '../composables/useDrawer'
 
@@ -65,6 +65,7 @@ onMounted(() => {
 
 const navItems = [
   { name: 'chat', label: '首页', path: '/', icon: MessageSquare },
+  { name: 'contract-scan', label: '合同扫描与审查', path: '/contract-scan', icon: ScanLine },
   { name: 'tools', label: '法律工具箱', path: '/tools', icon: Calculator },
   { name: 'library', label: '法条知识库', path: '/library', icon: Library }
 ]

@@ -56,6 +56,8 @@ code=$(curl $CURL_K -s -o /dev/null -w '%{http_code}' "$BASE/chat/files/aaaaaaaa
 if [ "$code" = "403" ]; then ok original-auth-guard; else bad original-auth-guard "HTTP $code（期望403）"; fi
 first=$(curl $CURL_K -fsS "$BASE/chat/files/capabilities" 2>/dev/null | head -c 1)
 if [ "$first" = "[" ]; then ok direct-capabilities; else bad direct-capabilities "附件能力接口未返回 JSON 列表"; fi
+code=$(curl $CURL_K -s -o /dev/null -w '%{http_code}' "$BASE/chat/files/policy")
+if [ "$code" = "200" ] || [ "$code" = "204" ]; then ok attachment-policy; else bad attachment-policy "HTTP $code（期望 200 或 204）"; fi
 
 echo "---- probes: $pass passed, $fail failed ----"
 [ "$fail" -eq 0 ]

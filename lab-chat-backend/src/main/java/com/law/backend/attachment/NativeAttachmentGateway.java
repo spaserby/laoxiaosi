@@ -15,6 +15,7 @@ import org.springframework.http.client.JdkClientHttpRequestFactory;
 import org.springframework.http.client.MultipartBodyBuilder;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
+import org.springframework.web.client.RestClientException;
 
 import java.io.IOException;
 import java.net.URI;
@@ -25,6 +26,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
@@ -37,7 +39,6 @@ import java.util.concurrent.Semaphore;
 @RequiredArgsConstructor
 @EnableConfigurationProperties(NativeAttachmentProperties.class)
 public class NativeAttachmentGateway {
-    private static final Set<String> FORMATS = Set.of("doc", "docx", "pdf", "png", "jpg", "jpeg", "webp");
     private static final HttpClient HTTP = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10))
             .followRedirects(HttpClient.Redirect.NEVER).build();
     private final Semaphore slots = new Semaphore(2);
@@ -48,35 +49,71 @@ public class NativeAttachmentGateway {
     private final ChatFileService files;
 
     public record Capability(String id, String label, Set<String> formats, long maxBytes, int maxPdfPages) {}
+    public record Policy(String revision, String recipient, Set<String> formats, Set<String> imageFormats, int maxFiles,
+                         long maxTotalBytes, long maxDocumentBytes, long maxImageBytes, int maxPdfPages) {
+        public long fileLimit(String extension) {
+            if (!formats.contains(extension)) throw new IllegalArgumentException("本轮包含不支持的附件格式，请移除后重试");
+            return imageFormats.contains(extension) ? maxImageBytes : maxDocumentBytes;
+        }
+    }
+    public static final class PolicyChangedException extends IllegalArgumentException {
+        public PolicyChangedException() { super("附件处理设置已更新，请查看新的提示后再次发送"); }
+    }
     public record Request(String targetId, String sessionId, SessionOwnershipService.Owner owner, List<String> ids) {}
+
+    public boolean legacyModesEnabled() { return properties.isLegacyModesEnabled(); }
+
+    public java.util.Optional<Policy> currentPolicy() {
+        return properties.getTargets().entrySet().stream()
+                .filter(entry -> entry.getKey().equals(properties.getDefaultTarget()) && available(entry.getValue()))
+                .map(this::policy).findFirst();
+    }
+
+    public Policy confirmPolicy(String revision) {
+        Policy policy = currentPolicy().orElseThrow(() -> revision == null
+                ? new IllegalArgumentException("附件处理暂不可用，请稍后重试或仅发送文字")
+                : new PolicyChangedException());
+        if (!policy.revision().equals(revision)) throw new PolicyChangedException();
+        return policy;
+    }
 
     public List<Capability> capabilities() {
         return properties.getTargets().entrySet().stream().filter(entry -> available(entry.getValue()))
-                .map(entry -> new Capability(selectionId(entry), entry.getValue().getLabel(), FORMATS,
-                        maxBytes(entry.getValue()), entry.getValue().getMaxPdfPages())).toList();
+                .map(this::policy).map(policy -> new Capability(policy.revision(), policy.recipient(), policy.formats(),
+                        policy.maxTotalBytes(), policy.maxPdfPages())).toList();
     }
 
     public Request prepare(String id, String sessionId, SessionOwnershipService.Owner owner,
                            List<AttachmentRepository.FileRecord> selected) {
-        var target = requireTarget(id);
+        var policy = policy(requireTarget(id));
         if (selected.isEmpty()) throw new IllegalArgumentException("请添加要直传的附件");
-        if (selected.stream().anyMatch(file -> !FORMATS.contains(file.extension())))
-            throw new IllegalArgumentException("原件直传支持 PDF、DOC、DOCX 和常见图片，TXT / Markdown 请使用片段问答");
-        if (selected.stream().mapToLong(AttachmentRepository.FileRecord::sizeBytes).sum() > maxBytes(target))
-            throw new IllegalArgumentException("本轮附件总大小超过所选模型的直传限额");
+        if (selected.size() > policy.maxFiles()) throw new IllegalArgumentException("本轮最多发送 " + policy.maxFiles() + " 个附件");
+        long total = 0;
+        for (var file : selected) {
+            long limit = policy.fileLimit(file.extension());
+            if (file.sizeBytes() > limit) throw new IllegalArgumentException("「" + file.name() + "」超过单文件上限 " + size(limit));
+            total += file.sizeBytes();
+        }
+        if (total > policy.maxTotalBytes())
+            throw new IllegalArgumentException("本轮附件共 " + size(total) + "，最多 " + size(policy.maxTotalBytes()) + "，请移除文件或分次发送");
         return new Request(id, sessionId, owner, selected.stream().map(AttachmentRepository.FileRecord::fileId).toList());
     }
 
     public String answer(Request request, String systemPrompt, String question) {
-        var target = requireTarget(request.targetId());
+        var entry = requireTarget(request.targetId());
+        var target = entry.getValue();
+        int maxPages = policy(entry).maxPdfPages();
         if (!slots.tryAcquire()) throw new IllegalArgumentException("附件直传繁忙，请稍后重试");
         try {
             int pages = 0;
             for (String id : request.ids()) {
                 checkInterrupted();
                 var original = files.original(request.sessionId(), request.owner(), id);
-                pages += parser.validateOriginal(original.path(), original.metadata().extension());
-                if (pages > target.getMaxPdfPages()) throw new IllegalArgumentException("本轮 PDF 总页数超过直传限额，请拆分或使用片段问答");
+                try { pages += parser.validateOriginal(original.path(), original.metadata().extension()); }
+                catch (IllegalArgumentException e) { throw new IllegalArgumentException("「" + original.metadata().name() + "」" + e.getMessage()); }
+                if (pages > maxPages)
+                    throw new IllegalArgumentException("加入「" + original.metadata().name() + "」后 PDF 合计 " + pages
+                            + " 页，最多 " + maxPages + " 页，请拆分或分次发送");
             }
             var provider = models.getProviders().get(target.getProvider());
             String url = provider.getBaseUrl().replaceAll("/+$", "");
@@ -93,7 +130,7 @@ public class NativeAttachmentGateway {
         } catch (Exception e) {
             // HTTP 异常可能携带供应商响应、文件名和请求内容。
             log.warn("附件直传调用失败：type={}", e.getClass().getSimpleName());
-            throw new IllegalArgumentException("所选模型未完成附件处理，请重试或主动切换问答方式");
+            throw new IllegalArgumentException("未完成附件处理，请稍后重试");
         } finally {
             slots.release();
         }
@@ -108,13 +145,20 @@ public class NativeAttachmentGateway {
                 checkInterrupted();
                 var file = files.original(request.sessionId(), request.owner(), id);
                 var form = new MultipartBodyBuilder();
-                form.part("purpose", image(file) ? "user_data" : "rich_layout_recognition");
+                var extension = file.metadata().extension();
+                form.part("purpose", Set.of("pdf", "doc", "docx").contains(extension) ? "rich_layout_recognition" : "user_data");
                 form.part("expires_after[anchor]", "created_at");
                 form.part("expires_after[seconds]", "3600");
                 form.part("file", new FileSystemResource(file.path()), MediaType.parseMediaType(mime(file)))
                         .filename(name(file, content.size()));
-                JsonNode response = client.post().uri("/files").contentType(MediaType.MULTIPART_FORM_DATA)
-                        .body(form.build()).retrieve().body(JsonNode.class);
+                JsonNode response;
+                try {
+                    response = client.post().uri("/files").contentType(MediaType.MULTIPART_FORM_DATA)
+                            .body(form.build()).retrieve().body(JsonNode.class);
+                } catch (RestClientException e) {
+                    log.warn("供应商未完成附件上传：type={}", e.getClass().getSimpleName());
+                    throw new IllegalArgumentException("「" + file.metadata().name() + "」未能处理，请检查文件后重试");
+                }
                 String remoteId = response == null ? "" : response.path("id").asText();
                 if (!remoteId.matches("file-[A-Za-z0-9_-]{1,128}")) throw new IllegalStateException("Invalid file identifier");
                 remoteIds.add(remoteId);
@@ -185,11 +229,18 @@ public class NativeAttachmentGateway {
         return result;
     }
 
-    private NativeAttachmentProperties.Target requireTarget(String id) {
+    private Map.Entry<String, NativeAttachmentProperties.Target> requireTarget(String id) {
         return properties.getTargets().entrySet().stream().filter(entry -> available(entry.getValue()))
                 .filter(entry -> selectionId(entry).equals(id))
-                .map(Map.Entry::getValue).findFirst()
-                .orElseThrow(() -> new IllegalArgumentException("所选原件直传模型不可用，请刷新后重新选择"));
+                .findFirst().orElseThrow(PolicyChangedException::new);
+    }
+
+    private Policy policy(Map.Entry<String, NativeAttachmentProperties.Target> entry) {
+        var target = entry.getValue();
+        long total = maxBytes(target);
+        return new Policy(selectionId(entry), target.getLabel(), AttachmentParser.EXTENSIONS, AttachmentParser.IMAGE_EXTENSIONS,
+                limits.getMaxFilesPerTurn(), total, Math.min(total, limits.getMaxFileBytes()), Math.min(total, limits.getMaxImageBytes()),
+                Math.min(target.getMaxPdfPages(), limits.getMaxPages()));
     }
 
     private String selectionId(Map.Entry<String, NativeAttachmentProperties.Target> entry) {
@@ -197,7 +248,9 @@ public class NativeAttachmentGateway {
         var provider = models.getProviders().get(target.getProvider());
         // 页面打开后发生端点或模型切换时，旧页面的接收方确认随之失效。
         String revision = String.join("\n", entry.getKey(), target.getProvider(), target.getProtocol().name(),
-                target.getLabel(), target.getModel(), provider.getBaseUrl());
+                target.getLabel(), target.getModel(), provider.getBaseUrl(), Long.toString(maxBytes(target)),
+                Integer.toString(target.getMaxPdfPages()), Integer.toString(limits.getMaxFilesPerTurn()),
+                Long.toString(limits.getMaxFileBytes()), Long.toString(limits.getMaxImageBytes()), Integer.toString(limits.getMaxPages()));
         return entry.getKey() + "-" + UUID.nameUUIDFromBytes(revision.getBytes(StandardCharsets.UTF_8));
     }
 
@@ -219,6 +272,7 @@ public class NativeAttachmentGateway {
         return target.getProtocol() == NativeAttachmentProperties.Protocol.OPENAI_RESPONSES
                 ? Math.min(target.getMaxBytes(), 8 * 1024 * 1024L) : target.getMaxBytes();
     }
+    private static String size(long bytes) { return String.format(Locale.ROOT, "%.1f MiB", bytes / 1048576d); }
 
     private static RestClient client(String url, String key, Duration timeout) {
         var factory = new JdkClientHttpRequestFactory(HTTP);
@@ -238,6 +292,8 @@ public class NativeAttachmentGateway {
             case "pdf" -> "application/pdf";
             case "doc" -> "application/msword";
             case "docx" -> "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+            case "txt" -> "text/plain";
+            case "md" -> "text/markdown";
             default -> AttachmentParser.mime(file.metadata().extension());
         };
     }

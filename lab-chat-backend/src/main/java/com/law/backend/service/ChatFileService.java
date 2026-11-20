@@ -35,8 +35,7 @@ public class ChatFileService {
     public record Original(AttachmentRepository.FileRecord metadata, Path path) {}
     public record StoredImage(int idx, String mime, byte[] bytes, String location, String caption) {}
     public record Turn(List<AttachmentRepository.FileRecord> files, List<StoredImage> images) {}
-    private static final Set<String> EXTENSIONS = Set.of("txt", "md", "pdf", "doc", "docx", "png", "jpg", "jpeg", "webp");
-    private static final Set<String> IMAGES = Set.of("png", "jpg", "jpeg", "webp");
+    private static final Set<String> IMAGES = AttachmentParser.IMAGE_EXTENSIONS;
     private final FileProperties properties;
     private final PrivateAttachmentStorage storage;
     private final AttachmentRepository repository;
@@ -71,11 +70,15 @@ public class ChatFileService {
         return upload(sessionId, owner, part, false);
     }
     public Mono<UploadedFile> upload(String sessionId, SessionOwnershipService.Owner owner, FilePart part, boolean deferred) {
+        return upload(sessionId, owner, part, deferred, Long.MAX_VALUE);
+    }
+    public Mono<UploadedFile> upload(String sessionId, SessionOwnershipService.Owner owner, FilePart part, boolean deferred, long byteBudget) {
         return Mono.defer(() -> {
             String name = safeName(part.filename());
             String extension = extension(name);
-            if (!EXTENSIONS.contains(extension)) return Mono.error(new IllegalArgumentException("支持 txt/md/pdf/doc/docx/png/jpg/webp 格式"));
-            long limit = IMAGES.contains(extension) ? properties.getMaxImageBytes() : properties.getMaxFileBytes();
+            if (!AttachmentParser.EXTENSIONS.contains(extension)) return Mono.error(new IllegalArgumentException("支持 txt/md/pdf/doc/docx/png/jpg/webp 格式"));
+            long limit = Math.min(byteBudget, IMAGES.contains(extension) ? properties.getMaxImageBytes() : properties.getMaxFileBytes());
+            if (limit <= 0) return Mono.error(new IllegalArgumentException("本轮附件已达到大小上限，请分次发送"));
             String id = storage.newId();
             AtomicLong bytes = new AtomicLong();
             return Mono.fromCallable(() -> {
@@ -84,7 +87,7 @@ public class ChatFileService {
                     .flatMap(ignored -> DataBufferUtils.write(part.content().<DataBuffer>handle((buffer, sink) -> {
                         if (bytes.addAndGet(buffer.readableByteCount()) > limit) {
                             DataBufferUtils.release(buffer);
-                            sink.error(new IllegalArgumentException("附件超过 " + limit / 1024 / 1024 + "MB 限制"));
+                            sink.error(new IllegalArgumentException("「" + name + "」超过本轮剩余大小或单文件上限，请移除或拆分后重试"));
                         } else sink.next(buffer);
                     }).doOnDiscard(DataBuffer.class, DataBufferUtils::release), storage.path(id), StandardOpenOption.WRITE))
                     .then(Mono.fromCallable(() -> {
@@ -108,6 +111,8 @@ public class ChatFileService {
                     });
         });
     }
+    public int maxFilesPerTurn() { return properties.getMaxFilesPerTurn(); }
+    public static String fileExtension(String raw) { return extension(safeName(raw)); }
     private void enqueue(String id, String extension) {
         active.add(id);
         try { worker.execute(() -> { try { process(id, extension); } finally { active.remove(id); } }); }

@@ -142,8 +142,11 @@ class NativeAttachmentGatewayTest {
         ImageIO.write(new BufferedImage(2, 2, BufferedImage.TYPE_INT_RGB), "png", image.toFile());
         var file = save("a", "png", image);
         var request = request("OPENAI_RESPONSES", List.of(file));
-        config.getTargets().get("OPENAI_RESPONSES").setMaxBytes(1);
+        var route = config.getTargets().get("OPENAI_RESPONSES");
+        long initialLimit = route.getMaxBytes();
+        route.setMaxBytes(1);
         assertThrows(IllegalArgumentException.class, () -> request("OPENAI_RESPONSES", List.of(file)));
+        route.setMaxBytes(initialLimit);
         when(files.original("synthetic-session", owner, file.fileId())).thenThrow(new SessionAccessDeniedException());
         assertThrows(SessionAccessDeniedException.class, () -> gateway.answer(request, "rules", "synthetic question"));
         assertTrue(calls.isEmpty());
@@ -166,6 +169,37 @@ class NativeAttachmentGatewayTest {
         config.getTargets().get("OPENAI_RESPONSES").setModel("synthetic-model-update");
         assertTrue(gateway.capabilities().stream().noneMatch(c -> c.id().equals(selected)));
         assertThrows(IllegalArgumentException.class, () -> gateway.prepare(selected, "synthetic-session", owner, List.of()));
+        assertTrue(calls.isEmpty());
+    }
+
+    @Test void defaultPolicyAllowsOnlyConfiguredRecipientAndPublishesItsEffectiveLimits() {
+        config.setDefaultTarget("DEEPSEEK_FILES");
+        config.getTargets().get("DEEPSEEK_FILES").setMaxBytes(20 * 1024 * 1024L);
+        var first = gateway.currentPolicy().orElseThrow();
+        assertEquals(20 * 1024 * 1024L, first.maxTotalBytes());
+        assertEquals(8 * 1024 * 1024L, first.maxImageBytes());
+        assertEquals(3, first.maxFiles());
+        assertEquals(first, gateway.confirmPolicy(first.revision()));
+        config.setDefaultTarget("OPENAI_RESPONSES");
+        var second = gateway.currentPolicy().orElseThrow();
+        assertEquals(8 * 1024 * 1024L, second.maxTotalBytes());
+        assertThrows(NativeAttachmentGateway.PolicyChangedException.class, () -> gateway.confirmPolicy(first.revision()));
+        assertEquals(second, gateway.confirmPolicy(second.revision()));
+        config.getTargets().get("OPENAI_RESPONSES").setEnabled(false);
+        assertTrue(gateway.currentPolicy().isEmpty());
+        assertThrows(NativeAttachmentGateway.PolicyChangedException.class, () -> gateway.confirmPolicy(second.revision()));
+    }
+
+    @Test void combinedPdfPagesAreCheckedBeforeAnyOriginalIsForwarded() throws Exception {
+        config.getTargets().get("DEEPSEEK_FILES").setMaxPdfPages(1);
+        Path pdf = folder.resolve("page.pdf");
+        try (var document = new PDDocument()) {
+            document.addPage(new PDPage());
+            document.save(pdf.toFile());
+        }
+        var request = request("DEEPSEEK_FILES", List.of(save("a", "pdf", pdf), save("b", "pdf", pdf)));
+        var error = assertThrows(IllegalArgumentException.class, () -> gateway.answer(request, "rules", "synthetic question"));
+        assertTrue(error.getMessage().contains("PDF 合计 2 页"));
         assertTrue(calls.isEmpty());
     }
 }

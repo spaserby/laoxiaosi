@@ -6,14 +6,16 @@
  * 视觉：白纸 sheet + 报头 + 下划线三态 tab + 细线输入框 + 墨黑宽按钮（与正刊同源）
  */
 import { ref, onUnmounted } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { useUserStore } from '../stores/user'
 import { sendSmsCode, resetPassword } from '../api/auth'
 import { Scale } from 'lucide-vue-next'
 
 const router = useRouter()
+const route = useRoute()
 const userStore = useUserStore()
+const afterAuth = () => router.push({ name: route.query.from === 'contract-scan' ? 'contract-scan' : 'chat' })
 
 const mode = ref('login')
 const loading = ref(false)
@@ -71,7 +73,7 @@ async function doLogin() {
   try {
     await userStore.login(loginForm.value)
     ElMessage.success('登录成功')
-    router.push('/')
+    afterAuth()
   } catch (e) {
     ElMessage.error(e.message)
   } finally {
@@ -84,7 +86,7 @@ async function doRegister() {
   try {
     await userStore.register(regForm.value)
     ElMessage.success('注册成功，已自动登录')
-    router.push('/')
+    afterAuth()
   } catch (e) {
     ElMessage.error(e.message)
   } finally {

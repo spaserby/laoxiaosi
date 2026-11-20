@@ -23,12 +23,15 @@ import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 import java.util.zip.ZipFile;
 
 /** 有界完整解析。拒绝超限文档；单页失败显式计入覆盖率，绝不冒充全文成功。 */
 @Component
 public class AttachmentParser {
     public static final String VERSION = "document-v1";
+    public static final Set<String> IMAGE_EXTENSIONS = Set.of("png", "jpg", "jpeg", "webp");
+    public static final Set<String> EXTENSIONS = Set.of("txt", "md", "pdf", "doc", "docx", "png", "jpg", "jpeg", "webp");
     public record Parsed(String text, List<AttachmentChunker.Source> sources, int totalPages,
                          int processedPages, List<Integer> failedPages, List<String> warnings, String kind) {}
     private final FileProperties properties;
@@ -113,6 +116,13 @@ public class AttachmentParser {
                     }
                 }
                 case "png", "jpg", "jpeg", "webp" -> validateImage(Files.readAllBytes(path), extension);
+                case "txt", "md" -> {
+                    String text = decodeText(Files.readAllBytes(path));
+                    if (text.isBlank() || text.codePoints().anyMatch(c -> Character.isISOControl(c) && c != '\n' && c != '\r' && c != '\t'))
+                        throw new IllegalArgumentException("文本为空或含非文本内容，请另存为文本文件");
+                    if (text.length() > properties.getMaxTextChars())
+                        throw new IllegalArgumentException("文本过长，请拆分后发送");
+                }
                 default -> throw new IllegalArgumentException("此文件格式暂不支持原件直传");
             }
             return 0;

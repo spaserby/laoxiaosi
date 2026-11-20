@@ -102,9 +102,11 @@ test('直传只提交本轮选择，附件转入消息并可从历史恢复', as
     requests.push(JSON.parse(options.body))
     return new Response('event: done\ndata: [DONE]\n\n')
   }
-  assert.equal(chat.send('合成提问', chat.currentDraftAttachments, 'native', 'deepseek-files'), true)
+  assert.equal(chat.send('合成提问', chat.currentDraftAttachments, 'synthetic-policy'), true)
   assert.deepEqual(requests[0].fileIds, [pdf.fileId, image.fileId])
-  assert.equal(requests[0].nativeTarget, 'deepseek-files')
+  assert.equal(requests[0].attachmentPolicyVersion, 'synthetic-policy')
+  assert.equal(requests[0].nativeTarget, undefined)
+  assert.equal(requests[0].mode, undefined)
   assert.deepEqual(chat.currentDraftAttachments, [])
   const attachments = chat.currentMessages[0].attachments
   assert.deepEqual(attachments.map(file => file.fileId), requests[0].fileIds)
@@ -116,6 +118,46 @@ test('直传只提交本轮选择，附件转入消息并可从历史恢复', as
   reply = () => ({ data: [{ id: '1', role: 'user', content: '合成提问', attachments }], hasMore: false })
   await chat.loadHistory(sid)
   assert.equal(chat.currentMessages[0].attachments[1].name, image.name)
+})
+test('接收方变更保留输入与附件，刷新提示后等待用户再次发送', async () => {
+  const { chat } = setup()
+  const sid = 'synthetic-policy-session'
+  const question = '合成追问'
+  const files = [{ fileId: 'synthetic-pdf', name: '合成.pdf', extension: 'pdf', expiresAt: Date.now() + 60000 }]
+  chat.currentSessionId = sid
+  chat.draftText[sid] = question
+  chat.draftAttachments[sid] = files
+  chat.attachmentPolicy = { revision: 'old-policy', recipient: 'Old' }
+  reply = config => config.url.endsWith('/policy') ? { revision: 'new-policy', recipient: 'New' } : { data: [] }
+  let requests = 0
+  globalThis.fetch = async () => {
+    requests++
+    return new Response(JSON.stringify({ message: '附件处理设置已更新' }), { status: 409 })
+  }
+  chat.send(question, files, 'old-policy')
+  const limit = Date.now() + 2000
+  while (chat.attachmentPolicy?.revision !== 'new-policy' && Date.now() < limit) await new Promise(resolve => setTimeout(resolve, 5))
+  assert.equal(chat.attachmentPolicy.revision, 'new-policy')
+  assert.equal(chat.draftText[sid], question)
+  assert.deepEqual(chat.draftAttachments[sid], files)
+  assert.deepEqual(chat.currentMessages, [])
+  assert.equal(requests, 1)
+})
+test('附件处理失败后保留问题和原件供重试', async () => {
+  const { chat } = setup()
+  const sid = 'synthetic-retry-session'
+  const question = '合成对照问题'
+  const files = [{ fileId: 'synthetic-doc', name: '合成.doc', extension: 'doc', expiresAt: Date.now() + 60000 }]
+  chat.currentSessionId = sid
+  chat.draftText[sid] = question
+  chat.draftAttachments[sid] = files
+  globalThis.fetch = async () => new Response('event: error\ndata: 合成文件处理失败\n\n')
+  chat.send(question, files, 'synthetic-policy')
+  const limit = Date.now() + 2000
+  while (chat.isStreaming && Date.now() < limit) await new Promise(resolve => setTimeout(resolve, 5))
+  assert.equal(chat.draftText[sid], question)
+  assert.deepEqual(chat.draftAttachments[sid], [{ ...files[0], reused: true }])
+  assert.match(chat.currentMessages.at(-1).content, /合成文件处理失败/)
 })
 test('身份切换后旧SSE和缓冲不能写入新身份', async () => {
   const { chat } = setup(); chat.loadSessions=async () => {}
@@ -144,7 +186,11 @@ test('中文输入法确认候选保留草稿，普通Enter仍可发送', async 
   globalThis.window = { matchMedia: () => ({ matches: false, addEventListener() {} }), addEventListener() {}, removeEventListener() {} }
   try {
     const { default: Input } = await vite.ssrLoadModule('/src/components/ChatInput.vue')
-    const sends = []; chat.send = (...args) => sends.push(args)
+    const sends = []
+    globalThis.fetch = async (_url, options) => {
+      sends.push(JSON.parse(options.body))
+      return new Response('event: done\ndata: [DONE]\n\n')
+    }
     const vnode = h(Input), app = createSSRApp({ render: () => vnode }); app.use(pinia); await renderToString(app)
     const state = vnode.component.setupState; state.text = '合成中文草稿'
     let prevented = false
@@ -152,5 +198,37 @@ test('中文输入法确认候选保留草稿，普通Enter仍可发送', async 
     assert.equal(sends.length, 0); assert.equal(state.text, '合成中文草稿'); assert.equal(prevented, false)
     state.onKey({ key: 'Enter', isComposing: false, keyCode: 13, shiftKey: false, preventDefault() {} })
     assert.equal(sends.length, 1); assert.equal(state.text, '')
+  } finally { if (previous === undefined) delete globalThis.window; else globalThis.window = previous }
+})
+test('附件输入框显示接收方和限额，用户可以直接发送', async () => {
+  const { chat, pinia } = setup()
+  const previous = globalThis.window
+  globalThis.window = { matchMedia: () => ({ matches: false, addEventListener() {} }) }
+  try {
+    chat.currentSessionId = 'synthetic-composer'
+    chat.attachmentPolicy = {
+      revision: 'synthetic-policy', recipient: 'DeepSeek', formats: ['pdf', 'doc', 'png'], imageFormats: ['png'],
+      maxFiles: 3, maxTotalBytes: 20 * 1048576, maxDocumentBytes: 20 * 1048576, maxImageBytes: 8 * 1048576, maxPdfPages: 30
+    }
+    chat.draftAttachments['synthetic-composer'] = [{
+      fileId: 'synthetic-doc', name: '合成.doc', extension: 'doc', sizeBytes: 1000, expiresAt: Date.now() + 60000
+    }]
+    const { default: Input } = await vite.ssrLoadModule('/src/components/ChatInput.vue')
+    const vnode = h(Input)
+    const app = createSSRApp({ render: () => vnode })
+    app.use(pinia)
+    const html = await renderToString(app)
+    assert.match(html, /所选原件将由 DeepSeek 处理/)
+    assert.match(html, /PDF 合计最多 30 页/)
+    assert.doesNotMatch(html, /type="radio"|<select|片段问答|全文审查/)
+    let request
+    globalThis.fetch = async (_url, options) => {
+      request = JSON.parse(options.body)
+      return new Response('event: done\ndata: [DONE]\n\n')
+    }
+    vnode.component.setupState.submit()
+    assert.deepEqual(request.fileIds, ['synthetic-doc'])
+    assert.equal(request.attachmentPolicyVersion, 'synthetic-policy')
+    assert.equal(request.mode, undefined)
   } finally { if (previous === undefined) delete globalThis.window; else globalThis.window = previous }
 })

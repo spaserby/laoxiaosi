@@ -9,6 +9,8 @@ import java.util.Map;
 @Data
 @ConfigurationProperties("legal.ai.files.native")
 public class NativeAttachmentProperties {
+    private String defaultTarget = "deepseek-files";
+    private boolean legacyModesEnabled;
     private Map<String, Target> targets = new LinkedHashMap<>();
 
     public enum Protocol { DEEPSEEK_FILES, OPENAI_RESPONSES }

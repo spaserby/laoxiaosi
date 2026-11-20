@@ -11,6 +11,8 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.redisson.api.RedissonClient;
 import org.springframework.http.MediaType;
+import org.springframework.http.CacheControl;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ContentDisposition;
 import org.springframework.http.ResponseEntity;
 import org.springframework.core.io.buffer.DataBuffer;
@@ -33,6 +35,7 @@ import reactor.core.scheduler.Schedulers;
 
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * 聊天 Controller：SSE 流式问答与停止生成入口
@@ -70,12 +73,23 @@ public class ChatController {
     public reactor.core.publisher.Mono<List<ChatFileService.UploadedFile>> uploadFiles(
             @RequestPart("files") List<org.springframework.http.codec.multipart.FilePart> parts,
             @RequestParam String sessionId, @RequestParam(defaultValue = "false") boolean deferProcessing,
+            @RequestParam(required = false) String attachmentPolicyVersion,
             @AuthenticationPrincipal Long userId, ServerWebExchange exchange) {
-        if (parts.isEmpty() || parts.size() > 3) return Mono.error(new IllegalArgumentException("一次上传 1 至 3 个附件"));
+        var policy = attachmentPolicyVersion == null ? null : nativeAttachments.confirmPolicy(attachmentPolicyVersion);
+        int maxFiles = policy == null ? chatFileService.maxFilesPerTurn() : policy.maxFiles();
+        if (parts.isEmpty() || parts.size() > maxFiles) return Mono.error(new IllegalArgumentException("一次上传 1 至 " + maxFiles + " 个附件"));
         var owner = ownershipService.resolve(exchange.getRequest().getHeaders(), userId);
         var uploaded = new java.util.concurrent.CopyOnWriteArrayList<ChatFileService.UploadedFile>();
-        return Flux.fromIterable(parts).concatMap(part -> deferProcessing
-                        ? chatFileService.upload(sessionId, owner, part, true) : chatFileService.upload(sessionId, owner, part))
+        var remaining = new AtomicLong(policy == null ? Long.MAX_VALUE : policy.maxTotalBytes());
+        boolean deferred = deferProcessing || !nativeAttachments.legacyModesEnabled();
+        return Flux.fromIterable(parts).concatMap(part -> {
+                    if (policy != null) {
+                        long limit = Math.min(remaining.get(), policy.fileLimit(ChatFileService.fileExtension(part.filename())));
+                        return chatFileService.upload(sessionId, owner, part, true, limit)
+                                .doOnNext(file -> remaining.addAndGet(-file.sizeBytes()));
+                    }
+                    return deferred ? chatFileService.upload(sessionId, owner, part, true) : chatFileService.upload(sessionId, owner, part);
+                })
                 .doOnNext(uploaded::add).collectList()
                 .onErrorResume(error -> Blocking.run(() -> uploaded.forEach(file -> chatFileService.delete(sessionId, owner, file.fileId())))
                         .onErrorComplete().then(Mono.error(error)))
@@ -87,6 +101,13 @@ public class ChatController {
 
     @GetMapping("/files/capabilities")
     public List<NativeAttachmentGateway.Capability> fileCapabilities() { return nativeAttachments.capabilities(); }
+
+    @GetMapping("/files/policy")
+    public ResponseEntity<NativeAttachmentGateway.Policy> attachmentPolicy() {
+        return nativeAttachments.currentPolicy()
+                .map(policy -> ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(policy))
+                .orElseGet(() -> ResponseEntity.noContent().cacheControl(CacheControl.noStore()).build());
+    }
 
     @GetMapping("/files/{fileId}/original")
     public Mono<ResponseEntity<Flux<DataBuffer>>> downloadOriginal(
@@ -112,6 +133,7 @@ public class ChatController {
     @PostMapping("/files/{fileId}/retry")
     public Mono<ChatFileService.UploadedFile> retryFile(@org.springframework.web.bind.annotation.PathVariable String fileId,
             @RequestParam String sessionId, @AuthenticationPrincipal Long userId, ServerWebExchange exchange) {
+        if (!nativeAttachments.legacyModesEnabled()) return Mono.error(new IllegalArgumentException("附件解析重试暂不可用"));
         return Blocking.call(() -> chatFileService.retry(sessionId, ownershipService.resolve(exchange.getRequest().getHeaders(), userId), fileId));
     }
 
@@ -144,7 +166,8 @@ public class ChatController {
     }
 
     /** POST 流式聊天请求体（会话 ID + 问题 + 附件） */
-    public record StreamRequest(String sessionId, String userMessage, List<String> fileIds, String mode, String nativeTarget) {
+    public record StreamRequest(String sessionId, String userMessage, List<String> fileIds, String mode,
+                                String nativeTarget, String attachmentPolicyVersion) {
     }
 
     /**
@@ -157,12 +180,13 @@ public class ChatController {
     public Flux<ServerSentEvent<String>> streamPost(@RequestBody StreamRequest request,
                                                      @AuthenticationPrincipal Long userId,
                                                      ServerWebExchange exchange) {
-        return streamInternal(request.sessionId(), request.userMessage(), request.fileIds(), request.mode(), request.nativeTarget(),
+        String revision = request.attachmentPolicyVersion() != null ? request.attachmentPolicyVersion() : request.nativeTarget();
+        return streamInternal(request.sessionId(), request.userMessage(), request.fileIds(), request.mode(), revision,
                 userId, exchange);
     }
 
     private Flux<ServerSentEvent<String>> streamInternal(String sessionId, String userMessage,
-                                                         List<String> fileIds, String mode, String nativeTarget, Long userId,
+                                                         List<String> fileIds, String mode, String attachmentPolicyVersion, Long userId,
                                                          ServerWebExchange exchange) {
         // ★ 日志不含问题正文：法律咨询内容属敏感个人信息，只记长度等元数据（P0 安全整改）
         log.info("收到聊天请求: sessionId={}, 问题长度={}, 附件数={}", sessionId,
@@ -173,14 +197,19 @@ public class ChatController {
         return Flux.defer(() -> {
             if (userMessage == null || userMessage.isBlank()) throw new IllegalArgumentException("问题不能为空");
             if (mode != null && !List.of("qa", "review", "native").contains(mode)) throw new IllegalArgumentException("附件处理模式无效");
-            if ("native".equals(mode) && (nativeTarget == null || nativeTarget.isBlank()))
-                throw new IllegalArgumentException("请选择接收附件的直传模型");
+            boolean hasAttachments = fileIds != null && !fileIds.isEmpty();
+            boolean legacy = nativeAttachments.legacyModesEnabled() && attachmentPolicyVersion == null
+                    && ("qa".equals(mode) || "review".equals(mode));
+            if ("review".equals(mode) && !legacy) throw new IllegalArgumentException("逐章审查暂未开放，请更新页面后发送附件");
+            if ("native".equals(mode) && !hasAttachments) throw new IllegalArgumentException("请添加要发送的附件");
+            String target = hasAttachments && !legacy ? nativeAttachments.confirmPolicy(attachmentPolicyVersion).revision() : null;
             // 配额上下文（登录=u:{userId}+role；游客=ip:{ip} 共享池）
             QuotaService.QuotaCtx quotaCtx = quotaContext(userId, exchange);
             // 会话归属：登录按 userId，匿名按 X-Guest-Key 凭据；他人会话直接 403（不再有"无主会话"）
             SessionOwnershipService.Owner owner = ownershipService.resolve(exchange.getRequest().getHeaders(), userId);
             ownershipService.claim(sessionId, owner);
-            return chatService.chat(sessionId, userMessage, quotaCtx, fileIds, owner, "review".equals(mode), "native".equals(mode) ? nativeTarget : null);
+            return chatService.chat(sessionId, userMessage, quotaCtx, fileIds == null && !legacy ? List.of() : fileIds,
+                    owner, legacy && "review".equals(mode), target);
         }).subscribeOn(Schedulers.boundedElastic());
     }
 
@@ -223,6 +252,11 @@ public class ChatController {
             com.law.backend.service.SessionAccessDeniedException e) {
         return org.springframework.http.ResponseEntity.status(org.springframework.http.HttpStatus.FORBIDDEN)
                 .body(Map.of("message", e.getMessage()));
+    }
+
+    @ExceptionHandler(NativeAttachmentGateway.PolicyChangedException.class)
+    public ResponseEntity<Map<String, String>> handleAttachmentPolicyChanged(NativeAttachmentGateway.PolicyChangedException e) {
+        return ResponseEntity.status(HttpStatus.CONFLICT).cacheControl(CacheControl.noStore()).body(Map.of("message", e.getMessage()));
     }
 
     /**

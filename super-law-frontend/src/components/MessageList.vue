@@ -10,6 +10,7 @@ import { Download, FileText, Trash2 } from 'lucide-vue-next'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useChatStore } from '../stores/chat'
 import { deleteAttachment, downloadOriginal } from '../api/session'
+import { attachmentIssue } from '../utils/attachments'
 import AssistantBubble from './AssistantBubble.vue'
 
 const store = useChatStore()
@@ -52,13 +53,15 @@ async function reuse(file) {
   const sid = store.currentSessionId
   const epoch = store.identityEpoch
   try {
+    if (!store.attachmentPolicy) await store.refreshAttachmentPolicy()
     await store.refreshAttachments(sid)
     if (sid !== store.currentSessionId || epoch !== store.identityEpoch || store.isStreaming || store.uploadingAttachmentsFor === sid) return
     const original = store.currentAttachments.find(item => item.fileId === file.fileId && item.expiresAt > Date.now())
     if (!original) { ElMessage.warning('原件已过期或被移除，请重新上传'); return }
     const draft = store.draftAttachments[sid] || []
     if (draft.some(item => item.fileId === file.fileId)) return
-    if (draft.length >= 3) { ElMessage.warning('单次咨询最多 3 个附件'); return }
+    const invalid = attachmentIssue([...store.currentDraftAttachments, original], store.attachmentPolicy)
+    if (invalid) { ElMessage.warning(invalid); return }
     store.draftAttachments[sid] = [...draft, { ...original, reused: true }]
     document.getElementById('input')?.focus()
   } catch {

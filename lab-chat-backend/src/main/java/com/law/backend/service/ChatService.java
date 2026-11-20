@@ -605,7 +605,7 @@ public class ChatService {
         if (ctx.nativeRequest() != null)
             return Mono.fromCallable(() -> nativeAttachments.answer(ctx.nativeRequest(), prompt, ctx.userMessage()))
                     .subscribeOn(Schedulers.boundedElastic())
-                    .timeout(java.time.Duration.ofMinutes(5), Mono.error(new IllegalArgumentException("模型附件处理超时，请拆分附件或使用片段问答")))
+                    .timeout(java.time.Duration.ofMinutes(5), Mono.error(new IllegalArgumentException("附件处理超时，请拆分后重试")))
                     .map(answer -> {
                         if (answerReviewer.needReview("legal") && !answerReviewer.reviewCitations(answer, ctx.registry()).pass())
                             throw new IllegalArgumentException("答复包含未核实的法条引用，请缩小问题范围后重试");

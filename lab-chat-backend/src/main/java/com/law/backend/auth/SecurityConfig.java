@@ -56,6 +56,8 @@ public class SecurityConfig {
                 .authorizeExchange(exchange -> exchange
                         // 管理端路径级角色闸（WebFilter 层求值，Reactive 安全上下文可靠读取）
                         .pathMatchers("/admin/**").hasRole("ADMIN")
+                        .pathMatchers("/tools/contract-scans/policy").permitAll()
+                        .pathMatchers("/tools/contract-scans/**").authenticated()
                         .anyExchange().permitAll())
                 // 身份识别过滤器挂在 AUTHENTICATION 位（早于授权判定）
                 .addFilterAt(jwtAuthFilter, SecurityWebFiltersOrder.AUTHENTICATION);

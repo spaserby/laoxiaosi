@@ -1,21 +1,24 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { attachmentsReady, attachmentState } from './attachments.js'
+import { attachmentIssue } from './attachments.js'
 
-const file = { status: 'READY', expiresAt: 2000, chars: 50000, totalPages: 31, processedPages: 31 }
-test('ready and partial files can be sent together within their lifetime', () => {
-  assert.equal(attachmentsReady([file, { ...file, status: 'PARTIAL' }], 1000), true)
-  assert.equal(attachmentState(file, 1000), '已就绪 · 50000 字 · 31/31 页')
+const MiB = 1024 * 1024
+const policy = {
+  maxFiles: 3, maxTotalBytes: 20 * MiB, maxDocumentBytes: 20 * MiB, maxImageBytes: 8 * MiB,
+  formats: ['pdf', 'doc', 'png'], imageFormats: ['png']
+}
+const pdf = { name: 'synthetic.pdf', sizeBytes: 8 * MiB, expiresAt: 2000 }
+const doc = { name: 'synthetic.DOC', size: 8 * MiB }
+const png = { name: 'synthetic.png', size: 4 * MiB }
+test('mixed formats can use the exact total budget', () => {
+  assert.equal(attachmentIssue([pdf, doc, png], policy, 1000), '')
+  assert.match(attachmentIssue([pdf, doc, { ...png, size: 4.5 * MiB }], policy, 1000), /20\.5 MiB.*20 MiB/)
 })
-test('deferred files can be sent and failed parsing only blocks retrieval', () => {
-  for (const status of ['STORED', 'QUEUED', 'PROCESSING']) {
-    assert.equal(attachmentsReady([{ ...file, status }], 1000), true)
-  }
-  for (const status of ['FAILED', 'UNKNOWN']) {
-    assert.equal(attachmentsReady([file, { ...file, status }], 1000), false)
-  }
-  assert.equal(attachmentsReady([file], 2000), false)
-  assert.equal(attachmentsReady([{ ...file, status: 'FAILED' }], 1000, true), true)
-  assert.equal(attachmentsReady([file], 2000, true), false)
-  assert.match(attachmentState(file, 2000), /已过期/)
+test('picker and reused files share format, size, count and expiry checks', () => {
+  assert.match(attachmentIssue([pdf, doc, png, png], policy, 1000), /最多发送 3 个/)
+  assert.match(attachmentIssue([{ ...png, size: 8 * MiB + 1 }], policy, 1000), /synthetic.png.*8 MiB/)
+  assert.match(attachmentIssue([{ ...doc, name: 'synthetic.xls' }], policy, 1000), /格式暂不支持/)
+  assert.match(attachmentIssue([pdf], policy, 2000), /已过期/)
+  assert.match(attachmentIssue([doc], null), /暂不可用/)
+  assert.equal(attachmentIssue([], null), '')
 })

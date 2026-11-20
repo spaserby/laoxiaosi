@@ -4,12 +4,12 @@ import LibraryView from '../views/LibraryView.vue'
 import ToolsView from '../views/ToolsView.vue'
 import AuthView from '../views/AuthView.vue'
 
-// 三个功能区：智能问答（含欢迎态）/ 法条知识库 / 法律工具箱 + 登录页
 // 设置页暂缓（C 端安全能力强制内置，不暴露配置入口）
 const router = createRouter({
   history: createWebHistory(),
   routes: [
     { path: '/', name: 'chat', component: ChatView },
+    { path: '/contract-scan', name: 'contract-scan', component: () => import('../views/ContractScanView.vue') },
     { path: '/library', name: 'library', component: LibraryView },
     { path: '/tools', name: 'tools', component: ToolsView },
     { path: '/auth', name: 'auth', component: AuthView },
@@ -24,7 +24,7 @@ const router = createRouter({
 // 不该还停在登录表单上。
 router.beforeEach((to) => {
   if (to.name === 'auth' && localStorage.getItem('sl_token')) {
-    return { path: '/' }
+    return { name: to.query.from === 'contract-scan' ? 'contract-scan' : 'chat' }
   }
   return true
 })

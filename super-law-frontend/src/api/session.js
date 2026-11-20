@@ -31,9 +31,9 @@ export const stopChat = (sessionId) =>
 export const fetchHomeStats = () => http.get('/stats/home').then(r => r.data)
 
 // 文档上传（会话附件）：multipart → [{fileId,name,chars,truncated}]；大文件解析放宽超时
-export const uploadFiles = (formData, sessionId, signal) =>
+export const uploadFiles = (formData, sessionId, attachmentPolicyVersion, signal) =>
   http.post('/chat/files', formData, {
-    params: { sessionId, deferProcessing: true },
+    params: { sessionId, attachmentPolicyVersion },
     signal,
     headers: { 'Content-Type': 'multipart/form-data' },
     timeout: 60000
@@ -42,10 +42,8 @@ export const uploadFiles = (formData, sessionId, signal) =>
 export const listAttachments = (sessionId) => http.get('/chat/files', { params: { sessionId } }).then(r => r.data)
 export const deleteAttachment = (sessionId, fileId) =>
   http.delete(`/chat/files/${encodeURIComponent(fileId)}`, { params: { sessionId } }).then(r => r.data)
-export const retryAttachment = (sessionId, fileId) =>
-  http.post(`/chat/files/${encodeURIComponent(fileId)}/retry`, null, { params: { sessionId } }).then(r => r.data)
 export const getAttachmentSource = (sessionId, fileId, parentId) =>
   http.get(`/chat/files/${encodeURIComponent(fileId)}/source`, { params: { sessionId, parentId } }).then(r => r.data.text)
-export const fileCapabilities = () => http.get('/chat/files/capabilities').then(r => r.data)
+export const getAttachmentPolicy = () => http.get('/chat/files/policy').then(r => r.data?.revision ? r.data : null)
 export const downloadOriginal = (sessionId, fileId) =>
   http.get(`/chat/files/${encodeURIComponent(fileId)}/original`, { params: { sessionId }, responseType: 'blob', timeout: 60000 }).then(r => r.data)

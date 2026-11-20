@@ -1,11 +1,11 @@
 # 会话附件
 
-上传原件流式写入私有目录。发送时选择相关片段问答、逐章全文审查或原件直传。一条消息可同时携带文档和图片。
-选择片段问答或逐章审查后，单线程解析，正文、结构化父子块和向量在同一事务发布到独立附件表。
-公共法条表与向量表不变。队列在进程内有界；进程中断后的任务会显示失败并允许重试，不宣称可靠消息队列。
+选中文档和图片后，劳小司把原件流式保存到私有目录。发送时原件随问题交给页面提示的接收方。
+前端在选文件时检查格式、数量和大小，后端复核真实字节、文件格式和 PDF 总页数。处理失败时保留本轮输入和已选附件。
 
-## 行为
+## 片段问答与逐章审查
 
+这两条链路留在后端。需要使用旧接口时，可设置 `ATTACHMENT_LEGACY_MODES_ENABLED=true`。
 - 支持 TXT、Markdown、PDF、DOC、DOCX 和 PNG/JPEG/WebP。DOCX 按正文顺序读取段落、表格，附带页眉页脚、脚注尾注。
   旧版 DOC 在片段问答或逐章审查中提取正文与表格文字，并提示核对原件中的图表和布局。
 - PDF 逐页提取文字；文字稀少且含图的页渲染后做完整文字转录。OCR 是独立调用，短 caption 不参与 OCR。
@@ -25,9 +25,10 @@
 
 ## 原件直传
 
-在私有环境配置启用 `ATTACHMENT_DEEPSEEK_DIRECT_ENABLED=true` 或 `ATTACHMENT_OPENAI_DIRECT_ENABLED=true`，并提供相应的 API Key。
-`application.yml` 的 `legal.ai.files.native.targets` 指向 `legal.ai.model.providers` 中的端点，并配置模型和每轮文件限额。默认关闭。
-前端显示兼容的接收方，用户选择「原件直传」后，一次发送所选原件和本轮问题。法条仍由现有检索流程提供。
+在私有环境配置 `ATTACHMENT_DEFAULT_TARGET` 选择公开页面唯一的接收方，默认 `deepseek-files`，也可配置为 `openai-responses`。
+同时启用对应的 `ATTACHMENT_DEEPSEEK_DIRECT_ENABLED` 或 `ATTACHMENT_OPENAI_DIRECT_ENABLED` 并提供 API Key。
+`application.yml` 的 `legal.ai.files.native.targets` 指向 `legal.ai.model.providers` 中的端点，并配置模型和每轮文件限额。
+输入框展示接收方和 PDF 页数上限。每轮默认最多 3 个文件，文档上限 20 MiB，单图上限 8 MiB，实际单件上限同时受该接收方的总额约束。法条仍由现有检索流程提供。
 直传跳过应用内的附件 OCR、切块和向量化。供应商会按自己的协议解析，页面提示用户核对原件。
 
 | 协议 | 原件处理 | 默认每轮限额 |
@@ -35,8 +36,8 @@
 | DeepSeek Files | PDF、DOC、DOCX 使用版面识别，图片作为图像输入。文件设置 1 小时过期，调用结束尝试删除 | 20 MiB，PDF 合计 30 页 |
 | OpenAI Responses | 文件和图片随请求发送，设定 `store: false`。PDF 可读取页面图像，Word 文档按文本提取 | 8 MiB，PDF 合计 20 页 |
 
-用户选择的接收方仅用于当前一轮。供应商拒绝、失败或超时时显示错误，由用户重新选择模式或接收方。
-直传使用本轮问题和所选原件，追问时请写明要核对的事项。接收方配置有变化时，刷新页面后重新选择。
+供应商拒绝、失败或超时时显示错误，输入仍可修改或重试。只有 YAML 指定的接收方能收到本轮原件。
+直传使用本轮问题和所选原件，追问时请写明要核对的事项。接收方或限额有变化时，前端更新提示并等待用户再次发送。
 供应商的数据处理和留存仍适用各自的政策。建议用合成资料确认账号支持的模型、版式识别效果和费用后启用。
 
 [DeepSeek 文件解析](https://api-docs.deepseek.com/guides/document_parsing/) · [OpenAI 文件输入](https://developers.openai.com/api/docs/guides/file-inputs) · [OpenAI 数据控制](https://developers.openai.com/api/docs/guides/your-data)
@@ -57,17 +58,18 @@
 
 | 请求 | 用途 |
 | --- | --- |
-| `POST /chat/files?sessionId=...&deferProcessing=true` multipart `files` | 返回 `STORED` 元数据，最多 3 个。省略 `deferProcessing` 则按旧流程立即排队 |
-| `GET /chat/files/capabilities` | 查询启用的直传接收方及限额 |
+| `GET /chat/files/policy` | 当前接收方、版本、格式和限额。附件不可用时返回 204 |
+| `POST /chat/files?sessionId=...&attachmentPolicyVersion=...` multipart `files` | 按实际字节限制这一批，保存原件并返回 `STORED` 元数据 |
+| `GET /chat/files/capabilities` | 兼容接口，查询已配置的直传能力 |
 | `GET /chat/files?sessionId=...` | 查询会话附件及处理状态 |
 | `POST /chat/files/{id}/retry?sessionId=...` | 重试失败、部分解析或向量化失败附件，不更改有效期 |
 | `DELETE /chat/files/{id}?sessionId=...` | 立即使附件不可读并回收 |
 | `GET /chat/files/{id}/source?sessionId=...&parentId=...` | 查询受鉴权的引用原文 |
 | `GET /chat/files/{id}/original?sessionId=...` | 下载受鉴权的原始文件 |
-| `POST /chat/stream` | `mode` 支持 `qa`、`review`、`native`。直传须提供能力查询返回的接收方 `id` 作为 `nativeTarget`，并明确提供 `fileIds` |
+| `POST /chat/stream` | 有附件时提供 `fileIds` 和策略返回的 `revision` 作为 `attachmentPolicyVersion`。过期版本返回 409 |
 
 状态为 `STORED → QUEUED → PROCESSING → READY/PARTIAL/FAILED`。直传可直接使用 `STORED` 原件，文件列表只返回有效附件。
-前端始终传 `fileIds`，空数组表示本轮为纯文字。旧客户端省略该字段时沿用会话级附件行为。
+前端始终传 `fileIds`，空数组表示本轮为纯文字。显式启用旧模式后，旧客户端可继续使用原有 `qa`、`review` 请求。
 SSE 的 `attachment` 事件包含 `sources`、`warnings`、`selectedSections`、`totalSections`、`fullCoverage`，不传全文。
 原文片段在预览中按纯文本显示。
 

@@ -263,6 +263,8 @@ legal:
       max-private-storage-bytes: ${ATTACHMENT_MAX_PRIVATE_STORAGE_BYTES:536870912}
       max-concurrent-uploads: ${ATTACHMENT_MAX_CONCURRENT_UPLOADS:4}
       native:
+        default-target: ${ATTACHMENT_DEFAULT_TARGET:deepseek-files}
+        legacy-modes-enabled: ${ATTACHMENT_LEGACY_MODES_ENABLED:false}
         targets:
           deepseek-files:
             enabled: ${ATTACHMENT_DEEPSEEK_DIRECT_ENABLED:false}
@@ -300,6 +302,13 @@ legal:
     # ★ 分层配额（速率限流 + 周期额度分离；-1 = 不限量；limit + period 决定口径）
     #   周期：daily 自然日 / monthly 自然月（重置点为下月 1 日 00:00）
     #   产品口径 2026-09：普通用户每月 50 次、律师每月 100 次；游客按日（IP 池共享）
+    contract-scan:
+      enabled: ${CONTRACT_SCAN_ENABLED:true}
+      storage-bytes: ${CONTRACT_SCAN_STORAGE_BYTES:1073741824}
+      daily-ocr-pages: ${CONTRACT_SCAN_DAILY_OCR_PAGES:600}
+      daily-review-calls: ${CONTRACT_SCAN_DAILY_REVIEW_CALLS:800}
+      ocr-recipient: ${CONTRACT_SCAN_OCR_RECIPIENT:}
+      review-recipient: ${CONTRACT_SCAN_REVIEW_RECIPIENT:}
     quota:
       enabled: true
       tiers:
